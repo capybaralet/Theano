@@ -264,7 +264,6 @@ class ConvOp(OpenMPOp):
     def __init__(self, imshp=None, kshp=None, nkern=None, bsize=None,
                  dx=1, dy=1,
                  output_mode='valid',
-
                  unroll_batch=None,
                  unroll_kern=None,
                  unroll_patch=None,

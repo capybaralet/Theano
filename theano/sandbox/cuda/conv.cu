@@ -1018,7 +1018,8 @@ CudaNdarray_conv_full(const CudaNdarray *img, const CudaNdarray * kern,
         (version==3||version==4||version==5||version==-1) &&
         out_wid<=max_threads_dim0 &&//Maximum of X threads by block.x
         (kern_len+2*kern_len-2)*img_wid_padded*sizeof(float) + kern_size_byte<shared_avail && //their is only 16k of shared memory
-        !work_complete) //conv_full_patch_stack_padded
+        !work_complete && //conv_full_patch_stack_padded
+        (kern_len > 1 ||img_size_padded_byte+kern_size_byte<=shared_avail)) 
     {
       //version 3 without split
       //version 4 with split (more registers)
