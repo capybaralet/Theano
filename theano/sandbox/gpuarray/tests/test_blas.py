@@ -2,20 +2,15 @@ from unittest import TestCase
 from nose.plugins.skip import SkipTest
 
 import theano
-from theano import tensor
-from theano.tests import unittest_tools
 from theano.tensor.blas import (gemv_inplace, gemm_inplace, ger_destructive,
                                 _dot22)
 from theano.tensor.tests.test_blas import TestGer, BaseGemv
 
-from theano.sandbox.gpuarray import gpuarray_shared_constructor
-from theano.sandbox.gpuarray.tests.test_basic_ops import (makeTester, rand,
-                                                          mode_with_gpu)
+from theano.sandbox.gpuarray.tests.test_basic_ops import makeTester, rand
 
-from theano.sandbox.gpuarray.blas import (gpugemv_inplace, gpugemv_no_inplace,
-                                          gpugemm_inplace, gpugemm_no_inplace,
-                                          gpuger_inplace, gpuger_no_inplace,
-                                          GpuGer, gpu_dot22)
+from theano.sandbox.gpuarray.blas import (gpugemv_inplace,
+                                          gpugemm_inplace, gpuger_inplace,
+                                          gpu_dot22)
 
 
 GpuGemvTester = makeTester('GpuGemvTester',
@@ -87,13 +82,6 @@ class TestGpuSger(TestGer):
 
 class TestGpuSgerNoTransfer(TestGpuSger):
     shared = staticmethod(gpuarray_shared_constructor)
-
-class TestGpuGer_OpContract(TestCase, unittest_tools.T_OpContractMixin):
-    def setUp(self):
-        self.ops = [gpuger_no_inplace, gpuger_inplace]
-
-    def clone(self, op):
-        return GpuGer(destructive=op.destructive)
 
 
 GpuDot22Tester = makeTester(
