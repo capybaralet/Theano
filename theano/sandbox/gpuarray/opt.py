@@ -1,6 +1,12 @@
 import copy
 import theano
 import numpy
+
+try:
+    import pygpu
+except ImportError:
+    pass
+
 from theano import tensor, scalar, gof
 from theano.compile import optdb
 from theano.gof import (local_optimizer, EquilibriumDB,
@@ -15,7 +21,7 @@ from theano.tensor.nnet.conv import ConvOp
 from theano.sandbox.gpuarray.type import GpuArrayType
 from theano.sandbox.gpuarray.basic_ops import (
     host_from_gpu, gpu_from_host, HostFromGpu,
-    gpu_alloc, GpuAlloc, GpuReshape, GpuEye
+    gpu_alloc, GpuAlloc, GpuReshape, GpuEye, gpu_join, GpuJoin,
     )
 from theano.sandbox.gpuarray.blas import gpu_dot22, GpuGemv, GpuGemm, GpuGer
 from theano.sandbox.gpuarray.conv import GpuConv
@@ -26,7 +32,9 @@ from theano.sandbox.gpuarray.nnet import (
     )
 from theano.sandbox.gpuarray.elemwise import (GpuElemwise, _is_scalar,
                                               GpuDimShuffle, GpuCAReduceCuda)
-from theano.sandbox.gpuarray.subtensor import GpuIncSubtensor, GpuSubtensor
+from theano.sandbox.gpuarray.subtensor import (GpuIncSubtensor, GpuSubtensor,
+                                               GpuAdvancedIncSubtensor1,
+                                               GpuAdvancedIncSubtensor1_dev20)
 from theano.sandbox.gpuarray.type import GpuArrayConstant
 
 gpu_optimizer = EquilibriumDB()
@@ -145,8 +153,26 @@ optdb['canonicalize'].register('local_cut_gpua_host_gpua',
 
 
 @register_opt()
+@local_optimizer([tensor.Alloc])
+def local_gpuaalloc2(node):
+    """
+    Join(axis, Alloc, Alloc, ...) -> Join(axis, GpuAlloc, Alloc, ...)
+
+    Moves an alloc that is an input to join to the gpu.
+    """
+    if (isinstance(node.op, tensor.Alloc) and
+        all(c != 'output' and
+            c.op == tensor.join and
+            all(i.owner and
+                i.owner.op in [host_from_gpu, tensor.alloc]
+                for i in c.inputs[1:])
+            for c, idx in node.outputs[0].clients)):
+        return [host_from_gpu(gpu_alloc(*node.inputs))]
+
+
+@register_opt()
 @op_lifter([tensor.Alloc])
-def local_gpualloc(node):
+def local_gpuaalloc(node):
     new_out = gpu_alloc(*node.inputs)
     # We need to hide new broadcastable dimensions because
     # ReplaceValidate doesn't like when they change.
@@ -260,6 +286,26 @@ def local_gpua_specifyShape(node):
 
 
 @register_opt()
+@op_lifter([tensor.Join])
+def local_gpua_join(node):
+    return gpu_join
+
+
+@register_opt()
+@local_optimizer([GpuJoin])
+def local_gpuajoin_1(node):
+    # join of a single element
+    if (isinstance(node.op, GpuJoin) and
+        len(node.inputs) == 2):
+        return [node.inputs[1]]
+
+@register_opt()
+@op_lifter([tensor.Split])
+def local_gpua_split(node):
+    return GpuSplit(node.op.len_splits)
+
+
+@register_opt()
 @op_lifter([tensor.Subtensor])
 def local_gpua_subtensor(node):
     return GpuSubtensor(node.op.idx_list)
@@ -271,17 +317,42 @@ def local_gpua_incsubtensor(node):
     return GpuIncSubtensor(node.op.idx_list, node.op.inplace,
                            node.op.set_instead_of_inc,
                            node.op.destroyhandler_tolerate_aliased)
+                           
+
+@register_opt()
+@op_lifter([tensor.AdvancedIncSubtensor1])
+def local_gpua_advanced_incsubtensor(node):
+    
+    # This optimization is disabled if cuda is not active
+    if pygpu.get_default_context().kind != "cuda":
+        return None
+    
+    x, y = node.inputs[0:2]
+    coords = node.inputs[2:]
+    set_instead_of_inc = node.op.set_instead_of_inc
+    active_device_no = theano.sandbox.cuda.active_device_number()
+    device_properties = theano.sandbox.cuda.device_properties
+
+    compute_capability = device_properties(active_device_no)['major']
+    
+    if (compute_capability < 2 or x.ndim != 2 or y.ndim != 2):
+        return GpuAdvancedIncSubtensor1(
+                    set_instead_of_inc=set_instead_of_inc)
+    else:
+        return GpuAdvancedIncSubtensor1_dev20(
+                    set_instead_of_inc=set_instead_of_inc)
 
 
 @register_opt()
-@op_lifter([tensor.CAReduce, tensor.Sum])
+@op_lifter([tensor.CAReduce, tensor.Sum, tensor.elemwise.Prod])
 def local_gpua_careduce(node):
-    if (isinstance(node.op.scalar_op, scalar.basic.Add) or
-        isinstance(node.op.scalar_op, scalar.basic.Mul)):
+    if isinstance(node.op.scalar_op, (scalar.Add, scalar.Mul,
+                                      scalar.Maximum, scalar.Minimum)):
         x, = node.inputs
-        greduce = GpuCAReduceCuda(node.op.scalar_op, axis=node.op.axis)
-        if x.dtype != "float32":
-            return
+        greduce = GpuCAReduceCuda(
+            node.op.scalar_op, axis=node.op.axis,
+            dtype=getattr(node.op, 'dtype', None),
+            acc_dtype=getattr(node.op, 'acc_dtype', None))
         gvar = greduce(x)
         #We need to have the make node called, otherwise the mask can
         #be None
@@ -314,10 +385,21 @@ def local_gpua_careduce(node):
                 else:
                     new_mask.append(reduce_mask[i])
                     new_in_shp.append(x_shape[i])
+            new_axis = []
+            for idx, m in enumerate(new_mask):
+                if m == 1:
+                    new_axis.append(idx)
+            new_greduce = GpuCAReduceCuda(
+                node.op.scalar_op,
+                axis=new_axis, reduce_mask=new_mask,
+                dtype=getattr(node.op, 'dtype', None),
+                acc_dtype=getattr(node.op, 'acc_dtype', None))
 
-            new_greduce = GpuCAReduceCuda(new_mask, scalar_op)
             reshaped_x = x.reshape(tensor.stack(*new_in_shp))
             gpu_reshaped_x = gpu_from_host(reshaped_x)
+            gvar = greduce(gpu_reshaped_x)
+            #We need to have the make node called, otherwise the mask can
+            #be None
             reshaped_gpu_inputs = [gpu_reshaped_x]
             if new_greduce.supports_c_code(reshaped_gpu_inputs):
                 reduce_reshaped_x = host_from_gpu(

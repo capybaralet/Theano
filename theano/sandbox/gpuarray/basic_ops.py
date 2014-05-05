@@ -6,7 +6,7 @@ import theano
 from theano import Op, Apply
 from theano import tensor, scalar, config
 from theano.scalar import Scalar
-from theano.tensor.basic import Alloc
+from theano.tensor.basic import Alloc, Join, Split
 
 from theano.gof.python25 import any
 from theano.gof.utils import MethodNotDefined
@@ -112,7 +112,7 @@ class GpuKernelBase(object):
         return '|'.join(flags)
 
     def c_headers(self):
-        return ['compyte/types.h']
+        return ['gpuarray/types.h']
 
     def c_support_code_apply(self, node, name):
         kcode = self.c_kernel_code(node)
@@ -326,8 +326,8 @@ class GpuFromCuda(Op):
         return xshp
 
     def c_headers(self):
-        return ['<cuda_ndarray.cuh>', '<compyte/extension.h>',
-                '<compyte/types.h>', '<cuda.h>']
+        return ['<cuda_ndarray.cuh>', '<gpuarray/extension.h>',
+                '<gpuarray/types.h>', '<cuda.h>']
 
     def c_header_dirs(self):
         import cuda_ndarray
@@ -355,8 +355,8 @@ class GpuFromCuda(Op):
         """
 
     def c_init_code(self):
-        return ['cuda_get_ctx = (CUcontext (*)(void *))compyte_get_extension("cuda_get_ctx");',
-                'cuda_make_buf = (gpudata *(*)(void *, CUdeviceptr, size_t))compyte_get_extension("cuda_make_buf");']
+        return ['cuda_get_ctx = (CUcontext (*)(void *))gpuarray_get_extension("cuda_get_ctx");',
+                'cuda_make_buf = (gpudata *(*)(void *, CUdeviceptr, size_t))gpuarray_get_extension("cuda_make_buf");']
 
     def c_code(self, node, name, inputs, outputs, sub):
         return """
@@ -462,7 +462,7 @@ class CudaFromGpu(Op):
         return shp
 
     def c_headers(self):
-        return ['<cuda_ndarray.cuh>', '<compyte/extension.h>', '<cuda.h>']
+        return ['<cuda_ndarray.cuh>', '<gpuarray/extension.h>', '<cuda.h>']
 
     def c_header_dirs(self):
         import cuda_ndarray
@@ -490,8 +490,8 @@ class CudaFromGpu(Op):
         """
 
     def c_init_code(self):
-        return ['cuda_get_ctx = (CUcontext (*)(void *ctx))compyte_get_extension("cuda_get_ctx");',
-                'cuda_get_ptr = (CUdeviceptr (*)(gpudata *g))compyte_get_extension("cuda_get_ptr");']
+        return ['cuda_get_ctx = (CUcontext (*)(void *ctx))gpuarray_get_extension("cuda_get_ctx");',
+                'cuda_get_ptr = (CUdeviceptr (*)(gpudata *g))gpuarray_get_extension("cuda_get_ptr");']
 
     def c_code(self, node, name, inputs, outputs, sub):
         return """
@@ -669,7 +669,8 @@ class GpuAlloc(HideC, Alloc):
                     #always exists.
                       #theano.tensor.subtensor.AdvancedIncSubtensor,
                       theano.sandbox.gpuarray.subtensor.GpuIncSubtensor,
-                      #theano.sandbox.gpuarray.subtensor.GpuAdvancedIncSubtensor1,
+                      theano.sandbox.gpuarray.subtensor.GpuAdvancedIncSubtensor1,
+                      theano.sandbox.gpuarray.subtensor.GpuAdvancedIncSubtensor1_dev20,
                       theano.sandbox.gpuarray.blas.GpuGemm,
                       theano.sandbox.gpuarray.blas.GpuGemv,
                       theano.sandbox.gpuarray.blas.GpuGer,
@@ -723,6 +724,62 @@ class GpuReshape(HideC, tensor.Reshape):
             else:
                 raise ValueError("total size of new array must be unchanged")
         out[0] = x.reshape(tuple(shp))
+
+
+class GpuJoin(HideC, Join):
+    def make_node(self, axis, *tensors):
+        node = Join.make_node(self, axis, *tensors)
+
+        return Apply(self, [node.inputs[0]] + map(as_gpuarray_variable,
+                                                  tensors),
+                     [GpuArrayType(broadcastable=node.outputs[0].broadcastable,
+                                   dtype=node.outputs[0].dtype)()])
+
+    def perform(self, node, axis_and_tensors, out_):
+        out, = out_
+        axis = int(axis_and_tensors[0])
+        tensors = axis_and_tensors[1:]
+        out[0] = pygpu.concatenate(tensors, axis=axis).astype(
+            node.outputs[0].dtype)
+
+    def c_code_cache_version(self):
+        return (1,)
+
+    def c_code(self, node, name, inputs, out_, sub):
+        copy_to_list = []
+        restype=pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
+        for i, inp in enumerate(inputs[1:]):
+            copy_to_list.append("als[%s] = &%s->ga;" % (i, inp))
+        return """
+GpuArray **als = (GpuArray **)PyMem_Malloc(sizeof(GpuArray *) * %(n)s);
+if (als == NULL) {
+  PyErr_NoMemory();
+  %(fail)s
+}
+%(copy_inputs_to_list)s
+Py_XDECREF(%(out)s);
+%(out)s = pygpu_concatenate(als, %(n)s, PyInt_AsLong((PyObject *)%(axis)s),
+                            %(restype)s, (PyObject *)&PyGpuArrayType,
+                            pygpu_default_context());
+PyMem_Free(als);
+if (%(out)s == NULL)
+  %(fail)s
+        """ % dict(n=len(inputs[1:]), fail=sub['fail'], out=out_[0],
+                   axis=inputs[0], copy_inputs_to_list='\n'.join(copy_to_list),
+                   restype=restype)
+
+
+gpu_join = GpuJoin()
+
+
+class GpuSplit(HideC, Split):
+    def make_node(self, x, axis, splits):
+        node = Split.make_node(self, x, axis, splits)
+        x = as_gpuarray_variable(x)
+        outs = [GpuArrayType(dtype=o.dtype, broadcastable=o.broadcastable)()
+                for o in node.outputs]
+        return Apply(self, [x] + node.inputs[1:], outs)
+    # we reuse the perform of the CPU op, which is suitable
 
 
 class GpuEye(GpuKernelBase, Op):
@@ -806,7 +863,7 @@ KERNEL void k(GLOBAL_MEM %(ctype)s *a, ga_size n, ga_size m) {
         err = GpuKernel_call(&%(kname)s, 0, 1, 256, args);
         if (err != GA_NO_ERROR) {
             PyErr_Format(PyExc_RuntimeError,
-                         "compyte error: kEye: %%s. n%%lu, m=%%lu.",
+                         "gpuarray error: kEye: %%s. n%%lu, m=%%lu.",
                          GpuKernel_error(&%(kname)s, err),
                          (unsigned long)dims[0], (unsigned long)dims[1]);
             %(fail)s;

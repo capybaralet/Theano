@@ -207,15 +207,15 @@ class GpuArrayType(Type):
     def c_headers(self):
         # We need arrayobject for the PyArrayDescr struct def
         # (even if we just use a pointer to it in a function def)
-        return ['<compyte/array.h>', '<compyte/kernel.h>', '<compyte/error.h>',
-                '<compyte/buffer_blas.h>', '<numpy/arrayobject.h>',
+        return ['<gpuarray/array.h>', '<gpuarray/kernel.h>', '<gpuarray/error.h>',
+                '<gpuarray/buffer_blas.h>', '<numpy/arrayobject.h>',
                 '<gpuarray_api.h>']
 
     def c_header_dirs(self):
         return [pygpu.get_include(), numpy.get_include()]
 
     def c_libraries(self):
-        return ['compyte']
+        return ['gpuarray']
 
     def c_code_cache_version(self):
         ver = pygpu.gpuarray.api_version()
@@ -327,3 +327,16 @@ theano.compile.register_deep_copy_op_c_code(GpuArrayType, """
     %(oname)s = pygpu_copy(%(iname)s, GA_ANY_ORDER);
     if (!%(oname)s) { %(fail)s }
 """, version=(5,))
+
+theano.compile.register_rebroadcast_c_code(
+    GpuArrayType,
+    """
+    if(PyGpuArray_DIMS(%(iname)s)[%(axis)s] != 1){
+        PyErr_Format(PyExc_ValueError,
+            "Dimension %(axis)s in Rebroadcast's input was"
+            " supposed to be 1 (got %%d instead)",
+            PyGpuArray_DIMS(%(iname)s)[%(axis)s]);
+        %(fail)s
+    }
+    """,
+        version=1)
