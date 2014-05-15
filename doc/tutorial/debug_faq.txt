@@ -31,6 +31,10 @@ following example.
 
 .. code-block:: python
 
+    import numpy
+    import theano
+    import theano.tensor as T
+
     # compute_test_value is 'off' by default, meaning this feature is inactive
     theano.config.compute_test_value = 'off'
 
@@ -55,7 +59,7 @@ following example.
 
     # compile and call the actual function
     f = theano.function([x], h2)
-    f(numpy.random.rand(5, 10))
+    f(numpy.random.rand(5, 10).astype(theano.config.floatX))
 
 Running the above code generates the following error message:
 
@@ -101,7 +105,7 @@ can get Theano to reveal the exact source of the error.
     # input which will be of shape (5, 10)
     x  = T.matrix('x')
     # provide Theano with a default test-value
-    x.tag.test_value = numpy.random.rand(5, 10)
+    x.tag.test_value = numpy.random.rand(5, 10).astype(theano.config.floatX)
 
 In the above, we are tagging the symbolic matrix *x* with a special test
 value. This allows Theano to evaluate symbolic expressions on-the-fly (by
