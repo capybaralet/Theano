@@ -161,7 +161,8 @@ _logger = logging.getLogger('theano.tensor.blas')
 # Otherwise, we give an optimization warning for no reason in some cases.
 def default_blas_ldflags():
     try:
-        if hasattr(numpy.distutils, '__config__'):
+        if (hasattr(numpy.distutils, '__config__') and
+            numpy.distutils.__config__):
             #If the old private interface is available use it as it
             #don't print information to the user.
             blas_info = numpy.distutils.__config__.blas_opt_info
@@ -1493,11 +1494,11 @@ class GemmOptimizer(Optimizer):
             callbacks_before = fgraph.execute_callbacks_times.copy()
             callback_before = fgraph.execute_callbacks_time
 
-        class Updater:
-            def on_import(self, fgraph, new_node, reason):
-                if new_node is not node:
-                    nodelist.append(new_node)
-        u = Updater()
+        def on_import(new_node):
+            if new_node is not node:
+                nodelist.append(new_node)
+
+        u = theano.gof.opt.Updater(on_import, None, None)
         fgraph.attach_feature(u)
         while did_something:
             nb_iter += 1
