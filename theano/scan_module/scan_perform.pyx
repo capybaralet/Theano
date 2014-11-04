@@ -62,7 +62,7 @@ import copy
 
 
 def get_version():
-    return 0.279
+    return 0.283
 
 @cython.boundscheck(False)
 def perform(
@@ -194,15 +194,14 @@ def perform(
 
 
     if n_steps < 0:
-        n_steps = -n_steps
-        for idx in range(n_seqs):
-            if args[<unsigned int>(1+idx)].shape[0] < n_steps:
-                raise ValueError(('Sequence is shorter then the required '
-                                 'number of steps : (n_steps, seq, '
-                                  'seq.shape):'), n_steps,
-                                  args[1+idx],
-                                  args[1+idx].shape)
-            args[<unsigned int>(1+idx)] = args[<unsigned int>(1+idx)][::-1]
+        # History, in the past, this was used for backward
+        # scan. Now we reverse the inputs outside of scan.
+        raise IndexError(
+            "Scan was asked to run for negative number of step %d" %
+            n_steps)
+    elif n_steps == 0:
+        raise NotImplementedError(
+            "We didn't implemented yet the case where scan do 0 iteration")
     else:
         for idx in range(n_seqs):
             if args[<unsigned int>(1+idx)].shape[0] < n_steps:
@@ -456,6 +455,13 @@ def perform(
 	    # the directive.
                 sh0 = outs[idx][0].shape[0]
                 outs[idx][0] = outs[idx][0][:sh0-(n_steps - i)]
+
+    # We never reuse the input or output storage of the
+    # inner function so we clear it.
+    for i_s in input_storage:
+        i_s.storage[0] = None
+    for o_s in output_storage:
+        o_s.storage[0] = None
 
     t_call = time.time() - t0_call
 

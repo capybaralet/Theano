@@ -7,7 +7,6 @@ from theano.compile import optdb
 
 _logger_name = 'theano.sandbox.gpuarray'
 _logger = logging.getLogger(_logger_name)
-_logger.setLevel(logging.WARNING)
 
 error = _logger.error
 info = _logger.info
@@ -39,6 +38,10 @@ def init_dev(dev):
     pygpu_activated = True
     if config.print_active_device:
         print >> sys.stderr, "Using device %s: %s" % (dev, context.devname)
+    # remember the active device
+    init_dev.device = dev
+
+init_dev.device = None
 
 if pygpu:
     try:

@@ -7,6 +7,7 @@ from copy import copy
 import logging
 import os
 import sys
+import warnings
 # Not available on all platforms
 hashlib = None
 
@@ -27,7 +28,6 @@ from theano import gof
 from theano import config
 from theano.compat.six import StringIO
 from theano.gof import Op, Apply
-from theano.gof.python25 import any
 from theano.compile import Function, debugmode
 from theano.compile.profilemode import ProfileMode
 
@@ -82,26 +82,58 @@ def debugprint(obj, depth=-1, print_type=False,
     done = dict()
     results_to_print = []
     order = []
-    if isinstance(obj, gof.Variable):
-        results_to_print.append(obj)
-    elif isinstance(obj, gof.Apply):
-        results_to_print.extend(obj.outputs)
-    elif isinstance(obj, Function):
-        results_to_print.extend(obj.maker.fgraph.outputs)
-        order = obj.maker.fgraph.toposort()
-    elif isinstance(obj, (list, tuple)):
-        results_to_print.extend(obj)
-    elif isinstance(obj, gof.FunctionGraph):
-        results_to_print.extend(obj.outputs)
-        order = obj.toposort()
-    elif isinstance(obj, (int, long, float, numpy.ndarray)):
-        print obj
+    if isinstance(obj, (list, tuple)):
+        lobj = obj
     else:
-        raise TypeError("debugprint cannot print an object of this type", obj)
+        lobj = [obj]
+    for obj in lobj:
+        if isinstance(obj, gof.Variable):
+            results_to_print.append(obj)
+        elif isinstance(obj, gof.Apply):
+            results_to_print.extend(obj.outputs)
+        elif isinstance(obj, Function):
+            results_to_print.extend(obj.maker.fgraph.outputs)
+            order = obj.maker.fgraph.toposort()
+        elif isinstance(obj, gof.FunctionGraph):
+            results_to_print.extend(obj.outputs)
+            order = obj.toposort()
+        elif isinstance(obj, (int, long, float, numpy.ndarray)):
+            print obj
+        else:
+            raise TypeError("debugprint cannot print an object of this type",
+                            obj)
+
+    scan_ops = []
     for r in results_to_print:
+        #Add the parent scan op to the list as well
+        if hasattr(r.owner, 'op') and isinstance(r.owner.op, theano.scan_module.scan_op.Scan):
+            scan_ops.append(r)
+
         debugmode.debugprint(r, depth=depth, done=done, print_type=print_type,
                              file=_file, order=order, ids=ids,
-                             stop_on_name=stop_on_name)
+                             scan_ops=scan_ops, stop_on_name=stop_on_name)
+    if len(scan_ops) > 0:
+        print >> file, ""
+        new_prefix = ' >'
+        new_prefix_child = ' >'
+        print >> file, "Inner graphs of the scan ops:"
+
+        for s in scan_ops:
+            print >> file, ""
+            debugmode.debugprint(s, depth=depth, done=done, print_type=print_type,
+                                 file=_file, ids=ids,
+                                 scan_ops=scan_ops, stop_on_name=stop_on_name)
+
+            for idx, i in enumerate(s.owner.op.outputs):
+                if hasattr(i, 'owner') and hasattr(i.owner, 'op'):
+                    if isinstance(i.owner.op, theano.scan_module.scan_op.Scan):
+                        scan_ops.append(i)
+
+                debugmode.debugprint(r=i, prefix=new_prefix, depth=depth, done=done,
+                                     print_type=print_type, file=file,
+                                     ids=ids, stop_on_name=stop_on_name,
+                                     prefix_child=new_prefix_child, scan_ops=scan_ops)
+
     if file is _file:
         return file
     elif file == 'str':
@@ -491,12 +523,14 @@ def pydotprint(fct, outfile=None,
                max_label_size=70, scan_graphs=False,
                var_with_name_simple=False,
                print_output_file=True,
-               assert_nb_all_strings=-1
+               assert_nb_all_strings=-1,
+               return_image=False,
                ):
     """
     Print to a file (png format) the graph of a compiled theano function's ops.
 
-    :param fct: the theano fct returned by theano.function.
+    :param fct: a compiled Theano function, a Variable, an Apply or
+                a list of Variable.
     :param outfile: the output file where to put the graph.
     :param compact: if True, will remove intermediate var that don't have name.
     :param format: the file format of the output.
@@ -525,6 +559,16 @@ def pydotprint(fct, outfile=None,
                 the number of unique string nodes in the dot graph is equal to
                 this number. This is used in tests to verify that dot won't
                 merge Theano nodes.
+    :param return_image: If True, it will create the image and return it.
+        Useful to display the image in ipython notebook.
+
+        .. code-block:: python
+
+            import theano
+            v = theano.tensor.vector()
+            from IPython.display import SVG
+            SVG(theano.printing.pydotprint(v*2, return_image=True,
+                                           format='svg'))
 
     In the graph, ellipses are Apply Nodes (the execution of an op)
     and boxes are variables.  If variables have names they are used as
@@ -557,27 +601,39 @@ def pydotprint(fct, outfile=None,
         if (not isinstance(mode, ProfileMode)
             or not fct in mode.profile_stats):
             mode = None
-        fct_fgraph = fct.maker.fgraph
+        outputs = fct.maker.fgraph.outputs
+        topo = fct.maker.fgraph.toposort()
     elif isinstance(fct, gof.FunctionGraph):
         mode = None
         profile = None
-        fct_fgraph = fct
+        outputs = fct.outputs
+        topo = fct.toposort()
     else:
-        raise ValueError(('pydotprint expects as input a theano.function or '
-                         'the FunctionGraph of a function!'), fct)
-
+        if isinstance(fct, gof.Variable):
+            fct = [fct]
+        elif isinstance(fct, gof.Apply):
+            fct = fct.outputs
+        assert isinstance(fct, (list, tuple))
+        assert all(isinstance(v, gof.Variable) for v in fct)
+        fct = gof.FunctionGraph(inputs=gof.graph.inputs(fct),
+                                outputs=fct)
+        mode = None
+        profile = None
+        outputs = fct.outputs
+        topo = fct.toposort()
     if not pydot_imported:
         raise RuntimeError("Failed to import pydot. You must install pydot"
                             " for `pydotprint` to work.")
         return
 
     g = pd.Dot()
+
     if cond_highlight is not None:
         c1 = pd.Cluster('Left')
         c2 = pd.Cluster('Right')
         c3 = pd.Cluster('Middle')
         cond = None
-        for node in fct_fgraph.toposort():
+        for node in topo:
             if (node.op.__class__.__name__ == 'IfElse'
                 and node.op.name == cond_highlight):
                 cond = node
@@ -652,7 +708,6 @@ def pydotprint(fct, outfile=None,
         all_strings.add(varstr)
 
         return varstr
-    topo = fct_fgraph.toposort()
     apply_name_cache = {}
 
     def apply_name(node):
@@ -704,7 +759,6 @@ def pydotprint(fct, outfile=None,
 
     # Update the inputs that have an update function
     input_update = {}
-    outputs = list(fct_fgraph.outputs)
     if isinstance(fct, Function):
         for i in reversed(fct.maker.expanded_inputs):
             if i.update is not None:
@@ -760,7 +814,7 @@ def pydotprint(fct, outfile=None,
 
         for id, var in enumerate(node.outputs):
             varstr = var_name(var)
-            out = any([x[0] == 'output' for x in var.clients])
+            out = var in outputs
             label = str(var.type)
             if len(node.outputs) > 1:
                 label = str(id) + ' ' + label
@@ -783,7 +837,7 @@ def pydotprint(fct, outfile=None,
             elif var.name or not compact:
                 g.add_edge(pd.Edge(astr, varstr, label=label))
 #            else:
-            #don't add egde here as it is already added from the inputs.
+            # don't add egde here as it is already added from the inputs.
 
     if cond_highlight:
         g.add_subgraph(c1)
@@ -793,15 +847,11 @@ def pydotprint(fct, outfile=None,
     if not outfile.endswith('.' + format):
         outfile += '.' + format
 
-    g.write(outfile, prog='dot', format=format)
-    if print_output_file:
-        print 'The output file is available at', outfile
-
     if assert_nb_all_strings != -1:
-        assert len(all_strings) == assert_nb_all_strings
+        assert len(all_strings) == assert_nb_all_strings, len(all_strings)
 
     if scan_graphs:
-        scan_ops = [(idx, x) for idx, x in enumerate(fct_fgraph.toposort())
+        scan_ops = [(idx, x) for idx, x in enumerate(topo)
                     if isinstance(x.op, theano.scan_module.scan_op.Scan)]
         path, fn = os.path.split(outfile)
         basename = '.'.join(fn.split('.')[:-1])
@@ -819,6 +869,13 @@ def pydotprint(fct, outfile=None,
                        high_contrast, cond_highlight, colorCodes,
                        max_label_size, scan_graphs)
 
+    if return_image:
+        return g.create(prog='dot', format=format)
+    else:
+        g.write(outfile, prog='dot', format=format)
+        if print_output_file:
+            print 'The output file is available at', outfile
+
 
 def pydotprint_variables(vars,
                          outfile=None,
@@ -827,8 +884,15 @@ def pydotprint_variables(vars,
                          high_contrast=True, colorCodes=None,
                          max_label_size=50,
                          var_with_name_simple=False):
-    ''' Identical to pydotprint just that it starts from a variable instead
-    of a compiled function. Could be useful ? '''
+    '''DEPRECATED: use pydotprint() instead.
+
+    Identical to pydotprint just that it starts from a variable
+    instead of a compiled function. Could be useful ?
+
+    '''
+
+    warnings.warn("pydotprint_variables() is deprecated."
+                 " Use pydotprint() instead.")
 
     if colorCodes is None:
         colorCodes = default_colorCodes
@@ -863,8 +927,8 @@ def pydotprint_variables(vars,
                 dstr = dstr[:dstr.index('\n')]
             varstr = '%s %s' % (dstr, str(var.type))
         else:
-            #a var id is needed as otherwise var with the same type will be
-            #merged in the graph.
+            # a var id is needed as otherwise var with the same type will be
+            # merged in the graph.
             varstr = str(var.type)
 
         varstr += ' ' + str(len(var_str))
@@ -917,7 +981,7 @@ def pydotprint_variables(vars,
                     g.add_node(pd.Node(varastr, color='green'))
             else:
                 varastr = my_list[nd]
-            label = ''
+            label = None
             if len(app.inputs) > 1:
                 label = str(i)
             g.add_edge(pd.Edge(varastr, astr, label=label))
@@ -937,12 +1001,12 @@ def pydotprint_variables(vars,
                     g.add_node(pd.Node(varastr))
                 elif high_contrast:
                     g.add_node(pd.Node(varastr, style='filled',
-                                        fillcolor=color))
+                                       fillcolor=color))
                 else:
                     g.add_node(pd.Node(varastr, color=color))
             else:
                 varastr = my_list[nd]
-            label = ''
+            label = None
             if len(app.outputs) > 1:
                 label = str(i)
             g.add_edge(pd.Edge(astr, varastr, label=label))
@@ -960,7 +1024,7 @@ def pydotprint_variables(vars,
         if nd.owner:
             plot_apply(nd.owner, depth)
     try:
-        g.write_png(outfile, prog='dot')
+        g.write(outfile, prog='dot', format=format)
     except pd.InvocationException, e:
         # Some version of pydot are bugged/don't work correctly with
         # empty label. Provide a better user error message.
@@ -974,6 +1038,7 @@ def pydotprint_variables(vars,
                             " Theano. Using another version of pydot could"
                             " fix this problem. The pydot error is: " +
                             e.message)
+        raise
 
     print 'The output file is available at', outfile
 
@@ -1090,8 +1155,6 @@ def min_informative_str(obj, indent_level=0,
     return rval
 
 
-
-
 def var_descriptor(obj, _prev_obs=None, _tag_generator=None):
     """
     Returns a string, with no endlines, fully specifying
@@ -1153,6 +1216,7 @@ def var_descriptor(obj, _prev_obs=None, _tag_generator=None):
     rval = prefix + name
 
     return rval
+
 
 def position_independent_str(obj):
     if isinstance(obj, theano.gof.graph.Variable):

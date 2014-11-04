@@ -26,7 +26,7 @@ if cuda_available:
     from theano.sandbox.cuda import (CudaNdarrayType,
                                      float32_shared_constructor)
 
-from theano.sandbox.gpuarray.basic_ops import GpuKernelBase
+from theano.sandbox.gpuarray.basic_ops import GpuKernelBase, Kernel
 from theano.sandbox.gpuarray.type import GpuArrayType
 
 
@@ -91,8 +91,7 @@ class DotModulo(Op):
         out[0] = numpy.concatenate((o1, o2))
 
     def c_code_cache_version(self):
-        return
-        return (5,)
+        return (6,)
 
     def c_code(self, node, name, (_A, _s, _m, _A2, _s2, _m2), (_z, ), sub):
         return """
@@ -555,7 +554,12 @@ class GPU_mrg_uniform(mrg_uniform_base, GpuOp):
             otype = 'double'
             NORM = '4.656612873077392578125e-10'
         return """
-        static int %(nodename)s_printed_warning = 0;
+        // FB: I disable the printing of the warning, as we
+        //receive too much email about this and this don't help
+        //people. I'm not even sure if the "fix" to give the info about
+        //the shape statically give a speed up. So I consider this
+        //warning as useless until proved it can speed the user code.
+        static int %(nodename)s_printed_warning = 1;
 
         static __global__ void %(nodename)s_mrg_uniform(
                 %(otype)s*sample_data,
@@ -713,7 +717,7 @@ class GPU_mrg_uniform(mrg_uniform_base, GpuOp):
             }
         }
 
-        if (PyArray_NDIM(%(o_rstate)s) != 1)
+        if (CudaNdarray_NDIM(%(o_rstate)s) != 1)
         {
             PyErr_SetString(PyExc_ValueError, "rstate must be vector");
             %(fail)s;
@@ -729,6 +733,13 @@ class GPU_mrg_uniform(mrg_uniform_base, GpuOp):
         {
             unsigned int threads_per_block = std::min((unsigned int)n_streams_used_in_this_call, (unsigned int)NUM_VECTOR_OP_THREADS_PER_BLOCK);
             unsigned int n_blocks = std::min(ceil_intdiv((unsigned int)n_streams_used_in_this_call, threads_per_block), (unsigned int)NUM_VECTOR_OP_BLOCKS);
+
+            if (n_streams > (unsigned int)NUM_VECTOR_OP_THREADS_PER_BLOCK * (unsigned int)NUM_VECTOR_OP_BLOCKS)
+            {
+                PyErr_Format(PyExc_ValueError, "On GPU, n_streams should be at most %%u",
+                    (unsigned int)NUM_VECTOR_OP_THREADS_PER_BLOCK * (unsigned int)NUM_VECTOR_OP_BLOCKS);
+                %(fail)s;
+            }
 
             if (threads_per_block * n_blocks < n_streams)
             {
@@ -757,7 +768,7 @@ class GPU_mrg_uniform(mrg_uniform_base, GpuOp):
         """ % locals()
 
     def c_code_cache_version(self):
-        return (8,)
+        return (9,)
 
 
 class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
@@ -772,9 +783,9 @@ class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
         return op(rstate, cast(v_size, 'int32'))
 
     def c_headers(self):
-        return GpuKernelBase.c_headers(self) + ['numpy_compat.h']
+        return super(GPUA_mrg_uniform, self).c_headers() + ['numpy_compat.h']
 
-    def c_kernel_code(self, node):
+    def gpu_kernels(self, node, name):
         if self.output_type.dtype == 'float32':
             otype = 'float'
             NORM = '4.6566126e-10f'  # numpy.float32(1.0/(2**31+65))
@@ -783,10 +794,10 @@ class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
         else:
             otype = 'double'
             NORM = '4.656612873077392578125e-10'
-        return """
+        code = """
         KERNEL void mrg_uniform(
-                %(otype)s *sample_data,
-                ga_int *state_data,
+                GLOBAL_MEM %(otype)s *sample_data,
+                GLOBAL_MEM ga_int *state_data,
                 const ga_uint Nsamples,
                 const ga_uint Nstreams_used)
         {
@@ -809,7 +820,7 @@ class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
             const ga_int MASK2 = 65535;      //2^16 - 1
             const ga_int MULT2 = 21069;
 
-            const unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+            const ga_uint idx = GID_0 * LDIM_0 + LID_0;
             ga_int y1, y2, x11, x12, x13, x21, x22, x23;
 
             if (idx < Nstreams_used)
@@ -821,7 +832,7 @@ class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
             x22 = state_data[idx*6+4];
             x23 = state_data[idx*6+5];
 
-            for (int i = idx; i < Nsamples; i += Nstreams_used)
+            for (ga_uint i = idx; i < Nsamples; i += Nstreams_used)
             {
                 y1 = ((x12 & MASK12) << i22) + (x12 >> i9) + ((x13 & MASK13) << i7) + (x13 >> i24);
                 y1 -= (y1 < 0 || y1 >= M1) ? M1 : 0;
@@ -864,14 +875,14 @@ class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
 
         """ % locals()
 
-    def c_kernel_params(self, node):
-        return ["GA_BUFFER", "GA_BUFFER", "GA_UINT", "GA_UINT"]
+        # we shouldn't get to this line if it's about to fail
+        from pygpu import gpuarray
 
-    def c_kernel_name(self):
-        return "mrg_uniform"
-
-    def c_kernel_flags(self, node):
-        return self._get_kernel_flags(self.output_type.dtype, 'int32')
+        return [Kernel(code=code, name="mrg_uniform",
+                       params=[gpuarray.GpuArray, gpuarray.GpuArray,
+                               'uint32', 'uint32'],
+                       flags=Kernel.get_flags(self.output_type.dtype, 'int32'))
+                ]
 
     def c_code(self, node, nodename, inp, out, sub):
         rstate, size = inp
@@ -880,7 +891,7 @@ class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
         ndim = self.output_type.ndim
         o_type_num = numpy.asarray(0, dtype=self.output_type.dtype).dtype.num
         fail = sub['fail']
-        kname = self.c_kernel_obj(nodename)
+        kname = self.gpu_kernels(node, nodename)[0].objvar
 
         if self.output_type.dtype == 'float32':
             otype = 'float'
@@ -953,17 +964,25 @@ class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
             }
         }
 
-        if (PyGpuArray_NDIM(%(o_rstate)s) != 1)
+        if (PyGpuArray_NDIM(%(o_rstate)s) != 2)
         {
-            PyErr_SetString(PyExc_ValueError, "rstate must be vector");
-            %(fail)s;
+            PyErr_SetString(PyExc_ValueError, "rstate must be a matrix");
+            %(fail)s
         }
-        if (PyGpuArray_DIMS(%(o_rstate)s)[0] %% 6)
+        if (PyGpuArray_DIMS(%(o_rstate)s)[1] != 6)
         {
-            PyErr_Format(PyExc_ValueError, "rstate len must be multiple of 6");
-            %(fail)s;
+            PyErr_Format(PyExc_ValueError, "rstate must have 6 columns");
+            %(fail)s
         }
-        n_streams = PyGpuArray_DIMS(%(o_rstate)s)[0]/6;
+        if (%(o_rstate)s->ga.typecode != GA_INT) {
+            PyErr_Format(PyExc_ValueError, "rstate must be int32");
+            %(fail)s
+        }
+        if (!GpuArray_CHKFLAGS(&%(o_rstate)s->ga, GA_C_CONTIGUOUS)) {
+            PyErr_Format(PyExc_ValueError, "rstate must be C contiguous");
+            %(fail)s
+        }
+        n_streams = PyGpuArray_DIMS(%(o_rstate)s)[0];
         if (n_streams > n_elements)
           n_streams = n_elements;
 
@@ -985,15 +1004,16 @@ class GPUA_mrg_uniform(GpuKernelBase, mrg_uniform_base):
         """ % locals()
 
     def c_code_cache_version(self):
-        return (2, self.GpuKernelBase_version)
+        return (3, self.GpuKernelBase_version)
 
 
 def guess_n_streams(size, warn=True):
     """
     Return a guess at a good number of streams.
 
-    :param warn: If True, warn when a guess cannot be made (in which case
-    we return 60 * 256).
+    :param warn:
+      If True, warn when a guess cannot be made (in which case we
+      return 60 * 256).
     """
     # TODO: a smart way of choosing the number of streams, see #612.
     # Note that this code was moved out of `MRG_RandomStreams` so that it can
@@ -1127,20 +1147,25 @@ class MRG_RandomStreams(object):
         ndim may be a plain integer to supplement the missing
         information.
 
-        :param low: Lower bound of the interval on which values are sampled.
-        If the ``dtype`` arg is provided, ``low`` will be cast into dtype.
-        This bound is excluded.
+        :param low:
+          Lower bound of the interval on which values are sampled.  If
+          the ``dtype`` arg is provided, ``low`` will be cast into
+          dtype.  This bound is excluded.
 
-        :param high: Higher bound of the interval on which values are sampled.
-        If the ``dtype`` arg is provided, ``high`` will be cast into dtype.
-        This bound is excluded.
+        :param high:
+          Higher bound of the interval on which values are sampled.
+          If the ``dtype`` arg is provided, ``high`` will be cast into
+          dtype.  This bound is excluded.
 
-        :param size: Can be a list of integer or Theano variable
-                (ex: the shape of other Theano Variable)
+        :param size:
+          Can be a list of integer or Theano variable (ex: the shape
+          of other Theano Variable)
 
-        :param dtype: The output data type. If dtype is not specified, it will
-        be inferred from the dtype of low and high, but will be at least as
-        precise as floatX.
+        :param dtype:
+          The output data type. If dtype is not specified, it will be
+          inferred from the dtype of low and high, but will be at
+          least as precise as floatX.
+
         """
         low = as_tensor_variable(low)
         high = as_tensor_variable(high)
@@ -1267,14 +1292,18 @@ class MRG_RandomStreams(object):
     def normal(self, size, avg=0.0, std=1.0, ndim=None,
                dtype=None, nstreams=None):
         """
-        :param size: Can be a list of integers or Theano variables (ex: the
-        shape of another Theano Variable)
+        :param size:
+          Can be a list of integers or Theano variables (ex: the shape
+          of another Theano Variable)
 
-        :param dtype: The output data type. If dtype is not specified, it will
-        be inferred from the dtype of low and high, but will be at least as
-        precise as floatX.
+        :param dtype:
+          The output data type. If dtype is not specified, it will be
+          inferred from the dtype of low and high, but will be at
+          least as precise as floatX.
 
-        :param nstreams: Number of streams.
+        :param nstreams:
+          Number of streams.
+
         """
         # We need an even number of ]0,1[ samples. Then we split them
         # in two halves. First half becomes our U1's for Box-Muller,
@@ -1342,11 +1371,26 @@ class MRG_RandomStreams(object):
         assert final_samples.dtype == dtype
         return final_samples
 
+from theano.sandbox.gpuarray.opt import (register_opt as register_gpua,
+                                         host_from_gpu as host_from_gpua)
 
+@register_gpua()
 @local_optimizer([mrg_uniform])
+def local_gpua_mrg(node):
+    if (type(node.op) == mrg_uniform and
+        isinstance(node.inputs[0].type, GpuArrayType)):
+        outs = GPUA_mrg_uniform.new(node.inputs[0],
+                                    node.op.output_type.ndim,
+                                    node.op.output_type.dtype,
+                                    node.inputs[1])
+        return [outs[0], host_from_gpua(outs[1])]
+
+
+MRG_RNGs = (mrg_uniform, GPU_mrg_uniform, GPUA_mrg_uniform)
+@local_optimizer(MRG_RNGs)
 def mrg_random_make_inplace(node):
     op = node.op
-    if isinstance(op, mrg_uniform) and not op.inplace:
+    if isinstance(op, MRG_RNGs) and not op.inplace:
         # op might be gpu version
         new_op = op.__class__(op.output_type, inplace=True)
         return new_op.make_node(*node.inputs).outputs

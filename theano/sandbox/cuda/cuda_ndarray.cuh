@@ -1,6 +1,8 @@
 #ifndef _CUDA_NDARRAY_H
 #define _CUDA_NDARRAY_H
 
+#include <algorithm>
+
 // Defines for Python 2/3 compatibility.
 #if PY_MAJOR_VERSION >= 3
 // Py3k treats all ints as longs. This one is not caught by npy_3kcompat.h.
@@ -40,7 +42,7 @@
 #endif
 
 
-#include <cublas.h>
+#include <cublas_v2.h>
 
 #ifdef _WIN32
 #ifdef _CUDA_NDARRAY_C
@@ -81,11 +83,16 @@ typedef float real;
 #define VERBOSE_DEVICE_MALLOC 1
 #define NO_VERBOSE_DEVICE_MALLOC 0
 
+/* Use this handle to make cublas calls */
+extern DllExport cublasHandle_t handle;
+
 /**
  * Allocation and freeing of device memory should go through these functions so that the lib can track memory usage.
  *
  * device_malloc will set the Python error message before returning None.
  * device_free will return nonzero on failure (after setting the python error message)
+ *
+ * Set the Python error
  */
 DllExport void * device_malloc(size_t size);
 DllExport void * device_malloc(size_t size, int verbose);
@@ -143,6 +150,8 @@ enum operator_t
 /*
  * Return a CudaNdarray whose 'nd' dimensions are all 0.
  * if nd==-1, it is not initialized.
+ *
+ * Set the Python error
  */
 DllExport PyObject *
 CudaNdarray_New(int nd=-1);
@@ -281,6 +290,8 @@ static PyObject *CudaNdarray_SIZE_Object(const CudaNdarray *self, void *closure)
  * Allocate a new CudaNdarray with room for given number of dimensions
  *
  * No Storage space is allocated (and all dimensions are 0)
+ *
+ * Set the Python error
  */
 DllExport PyObject * CudaNdarray_new_nd(const int nd);
 
@@ -289,6 +300,8 @@ DllExport PyObject * CudaNdarray_new_nd(const int nd);
  *
  * Note: This does not allocate storage for data, or free
  *       pre-existing storage.
+ *
+ * Set the Python error
  */
 DllExport inline int ALWAYS_INLINE
 CudaNdarray_set_nd(CudaNdarray * self, const int nd)
@@ -365,8 +378,8 @@ static int CudaNdarray_alloc_contiguous(CudaNdarray *self, const int nd,
             //Detect overflow on unsigned integer
             if (dim[i] != 0 && size > (SIZE_MAX / dim[i])) {
                 PyErr_Format(PyExc_AssertionError,
-                             "Can't store in size_t for the bytes requested",
-                             size);
+                             "Can't store in size_t for the bytes requested %llu",
+                             (unsigned long long)size);
                 return -1;
             }
             size = size * dim[i];
@@ -382,8 +395,8 @@ static int CudaNdarray_alloc_contiguous(CudaNdarray *self, const int nd,
             //Detect overflow on unsigned integer
             if (dim[i] != 0 && size > (SIZE_MAX / dim[i])) {
                 PyErr_Format(PyExc_AssertionError,
-                             "Can't store in size_t for the bytes requested",
-                             size);
+                             "Can't store in size_t for the bytes requested %llu",
+                             (unsigned long long)size);
                 return -1;
             }
             size = size * dim[i];
@@ -433,6 +446,7 @@ static int CudaNdarray_alloc_contiguous(CudaNdarray *self, const int nd,
 
 /*
  * Return a CudaNdarray whose 'nd' dimensions are set to dims, and allocated.
+ * Set the python error.
  */
 template<typename inttype> 
 static PyObject *CudaNdarray_NewDims(int nd, const inttype * dims)
@@ -445,6 +459,9 @@ static PyObject *CudaNdarray_NewDims(int nd, const inttype * dims)
             Py_DECREF(rval);
             return NULL;
         }
+    }else{
+        PyErr_SetString(PyExc_MemoryError,
+                        "Failed to allocate the CudaNdarray structure.");
     }
     return (PyObject*)rval;
 }
@@ -496,6 +513,8 @@ DllExport int CudaNdarray_CopyFromArray(CudaNdarray * self, PyArrayObject*obj);
  *               e.g. suppose self and other are 2D matrices and other
  *               has only one row. Then we need to copy this row several
  *               times when copying to self.
+ *
+ * Set the Python error
  */
 DllExport int CudaNdarray_CopyFromCudaNdarray(CudaNdarray * self,
         const CudaNdarray * other, bool unbroadcast = false);
@@ -566,6 +585,7 @@ DllExport int CudaNdarray_dimshuffle(CudaNdarray * self, unsigned int len, const
 DllExport PyObject*
 CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args);
 
+// Set the Python error
 int fprint_CudaNdarray(FILE * fd, const CudaNdarray *self);
 
 
@@ -580,26 +600,38 @@ DllExport int CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_othe
 // or a pointer to an ndarray of the right size. In the last case it will
 // not change.
 // If fortran is non-zero, a fortran order is expected/created
+//
+// Set the Python error
 DllExport int CudaNdarray_prep_output(CudaNdarray ** arr, int nd,
                                       const int * dims, int fortran = 0);
 
-DllExport inline const char* ALWAYS_INLINE cublasGetErrorString(cublasStatus err){
-    if(CUBLAS_STATUS_SUCCESS == err)
+DllExport inline const char* ALWAYS_INLINE cublasGetErrorString(cublasStatus_t err){
+    switch(err) {
+    case CUBLAS_STATUS_SUCCESS:
         return "success";
-    else if(CUBLAS_STATUS_NOT_INITIALIZED == err)
+    case CUBLAS_STATUS_NOT_INITIALIZED:
         return "the library was not initialized";
-    else if(CUBLAS_STATUS_ALLOC_FAILED == err)
+    case CUBLAS_STATUS_ALLOC_FAILED:
         return "the resource allocation failed";
-    else if(CUBLAS_STATUS_INVALID_VALUE == err)
+    case CUBLAS_STATUS_INVALID_VALUE:
         return "the parameters n<0 or incx,incy=0";
-    else if(CUBLAS_STATUS_MAPPING_ERROR == err)
+#ifdef CUBLAS_STATUS_ARCH_MISMATCH
+    case CUBLAS_STATUS_ARCH_MISMATCH:
+        return "required device feature not present";
+#endif
+    case CUBLAS_STATUS_MAPPING_ERROR:
         return "an access to GPU memory space failed";
-    else if(CUBLAS_STATUS_EXECUTION_FAILED == err)
+    case CUBLAS_STATUS_EXECUTION_FAILED:
         return "the function failed to launch on the GPU";
-    else if(CUBLAS_STATUS_INTERNAL_ERROR == err)
+    case CUBLAS_STATUS_INTERNAL_ERROR:
         return "an internal operation failed";
-    else
+#ifdef CUBLAS_STATUS_NOT_SUPPORTED
+    case CUBLAS_STATUS_NOT_SUPPORTED:
+        return "unsupported function";
+#endif
+    default:
         return "unknow code";
+    }
 }
 
 #endif

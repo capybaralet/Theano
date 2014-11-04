@@ -1,8 +1,6 @@
-import commands
 import distutils
 import logging
 import os
-import re
 import subprocess
 import sys
 import warnings
@@ -19,7 +17,6 @@ from theano.gof.python25 import any
 from theano.misc.windows import output_subprocess_Popen
 
 _logger = logging.getLogger("theano.sandbox.cuda.nvcc_compiler")
-_logger.setLevel(logging.WARN)
 
 from theano.configparser import (config, AddConfigVar, StrParam,
                                  BoolParam, ConfigParam)
@@ -129,8 +126,7 @@ def find_cuda_root():
         return
     for dir in s.split(os.path.pathsep):
         if os.path.exists(os.path.join(dir, "nvcc")):
-            config.cuda.root = os.path.split(dir)[0]
-            return
+            return os.path.split(dir)[0]
 
 rpath_defaults = []
 
@@ -156,6 +152,12 @@ class NVCC_compiler(object):
         cuda_ndarray_cuh_hash = hash_from_file(
             os.path.join(os.path.split(__file__)[0], 'cuda_ndarray.cuh'))
         flags.append('-DCUDA_NDARRAY_CUH=' + cuda_ndarray_cuh_hash)
+
+        # NumPy 1.7 Deprecate the old API. I updated most of the places
+        # to use the new API, but not everywhere. When finished, enable
+        # the following macro to assert that we don't bring new code
+        # that use the old API.
+        flags.append("-D NPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION")
 
         # numpy 1.7 deprecated the following macro but the didn't
         # existed in the past
@@ -241,7 +243,6 @@ class NVCC_compiler(object):
             preargs = list(preargs)
         if sys.platform != 'win32':
             preargs.append('-fPIC')
-        no_opt = False
         cuda_root = config.cuda.root
 
         #The include dirs gived by the user should have precedence over
@@ -255,13 +256,11 @@ class NVCC_compiler(object):
             libs.append('cudart')
 
         lib_dirs = std_lib_dirs() + lib_dirs
-        if cuda_root:
-            lib_dirs.append(os.path.join(cuda_root, 'lib'))
-
-            # from Benjamin Schrauwen April 14 2010
-            if sys.platform != 'darwin':
-                # OS X uses universal libraries
-                lib_dirs.append(os.path.join(cuda_root, 'lib64'))
+        if any(ld == os.path.join(cuda_root, 'lib') or
+               ld == os.path.join(cuda_root, 'lib64') for ld in lib_dirs):
+            warnings.warn("You have the cuda library directory in your "
+                          "lib_dirs. This has been known to cause problems "
+                          "and should not be done.")
 
         if sys.platform != 'darwin':
             # sometimes, the linker cannot find -lpython so we need to tell it
@@ -290,8 +289,8 @@ class NVCC_compiler(object):
         #nvcc argument
         preargs1 = []
         for pa in preargs:
-            for pattern in ['-O', '-arch=',
-                            '--fmad', '--ftz', '--maxrregcount',
+            for pattern in ['-O', '-arch=', '-ccbin=', '-G', '-g', '-I',
+                            '-L', '--fmad', '--ftz', '--maxrregcount',
                             '--prec-div', '--prec-sqrt',  '--use_fast_math',
                             '-fmad', '-ftz', '-maxrregcount',
                             '-prec-div', '-prec-sqrt', '-use_fast_math']:
@@ -300,7 +299,9 @@ class NVCC_compiler(object):
         preargs2 = [pa for pa in preargs
                     if pa not in preargs1]  # other arguments
 
-        cmd = [nvcc_path, '-shared', '-g'] + preargs1
+        # Don't put -G by default, as it slow things down.
+        # We aren't sure if -g slow things down, so we don't put it by default.
+        cmd = [nvcc_path, '-shared'] + preargs1
         if config.nvcc.compiler_bindir:
             cmd.extend(['--compiler-bindir', config.nvcc.compiler_bindir])
 
@@ -308,6 +309,10 @@ class NVCC_compiler(object):
             # add flags for Microsoft compiler to create .pdb files
             preargs2.extend(['/Zi', '/MD'])
             cmd.extend(['-Xlinker', '/DEBUG'])
+            # remove the complaints for the duplication of `double round(double)`
+            # in both math_functions.h and pymath.h,
+            # by not including the one in pymath.h
+            cmd.extend(['-D HAVE_ROUND'])
 
         if local_bitwidth() == 64:
             cmd.append('-m64')

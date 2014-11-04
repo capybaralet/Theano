@@ -1,8 +1,9 @@
 import sys
 
-from theano.gof.python25 import DefaultOrderedDict
-
 import numpy
+
+from theano.gof.python25 import DefaultOrderedDict
+from theano.misc.ordered_set import OrderedSet
 from theano.compat.six import StringIO
 from theano.gof import opt
 from theano.configparser import AddConfigVar, FloatParam
@@ -26,7 +27,7 @@ class DB(object):
         return self._optimizer_idx
 
     def __init__(self):
-        self.__db__ = DefaultOrderedDict(set)
+        self.__db__ = DefaultOrderedDict(OrderedSet)
         self._names = set()
         self.name = None  # will be reset by register
         #(via obj.name by the thing doing the registering)
@@ -41,19 +42,19 @@ class DB(object):
             raise ValueError('The name of the object cannot be an existing'
                              ' tag or the name of another existing object.',
                              obj, name)
-        # This restriction is there because in many place we suppose that
-        # something in the DB is there only once.
-        if getattr(obj, 'name', "") in self.__db__:
-            raise ValueError('''You can\'t register the same optimization
-multiple time in a DB. Tryed to register "%s" again under the new name "%s".
- Use theano.gof.ProxyDB to work around that''' % (obj.name, name))
 
         if self.name is not None:
             tags = tags + (self.name,)
         obj.name = name
-        self.__db__[name] = set([obj])
+        # This restriction is there because in many place we suppose that
+        # something in the DB is there only once.
+        if obj.name in self.__db__:
+            raise ValueError('''You can\'t register the same optimization
+multiple time in a DB. Tryed to register "%s" again under the new name "%s".
+ Use theano.gof.ProxyDB to work around that''' % (obj.name, name))
+        self.__db__[name] = OrderedSet([obj])
         self._names.add(name)
-
+        self.__db__[obj.__class__.__name__].add(obj)
         self.add_tags(name, *tags)
 
     def add_tags(self, name, *tags):
@@ -79,15 +80,16 @@ multiple time in a DB. Tryed to register "%s" again under the new name "%s".
     def __query__(self, q):
         if not isinstance(q, Query):
             raise TypeError('Expected a Query.', q)
-        variables = set()
+        # The ordered set is needed for deterministic optimization.
+        variables = OrderedSet()
         for tag in q.include:
             variables.update(self.__db__[tag])
         for tag in q.require:
             variables.intersection_update(self.__db__[tag])
         for tag in q.exclude:
             variables.difference_update(self.__db__[tag])
-        remove = set()
-        add = set()
+        remove = OrderedSet()
+        add = OrderedSet()
         for obj in variables:
             if isinstance(obj, DB):
                 sq = q.subquery.get(obj.name, q)
@@ -143,15 +145,15 @@ class Query(object):
         :param position_cutoff: Used by SequenceDB to keep only optimizer that
                                 are positioned before the cut_off point.
         """
-        self.include = set(include)
-        self.require = require or set()
-        self.exclude = exclude or set()
+        self.include = OrderedSet(include)
+        self.require = require or OrderedSet()
+        self.exclude = exclude or OrderedSet()
         self.subquery = subquery or {}
         self.position_cutoff = position_cutoff
         if isinstance(self.require, (list, tuple)):
-            self.require = set(self.require)
+            self.require = OrderedSet(self.require)
         if isinstance(self.exclude, (list, tuple)):
-            self.exclude = set(self.exclude)
+            self.exclude = OrderedSet(self.exclude)
 
     #add all opt with this tag
     def including(self, *tags):
@@ -221,6 +223,7 @@ class SequenceDB(DB):
     other tags) fast_run and fast_compile optimizers are drawn is a SequenceDB.
 
     """
+    seq_opt = opt.SeqOptimizer
 
     def __init__(self, failure_callback=opt.SeqOptimizer.warn):
         super(SequenceDB, self).__init__()
@@ -254,13 +257,16 @@ class SequenceDB(DB):
         # the order we want.
         opts.sort(key=lambda obj: obj.name)
         opts.sort(key=lambda obj: self.__position__[obj.name])
-        ret = opt.SeqOptimizer(opts, failure_callback=self.failure_callback)
+        kwargs = {}
+        if self.failure_callback:
+            kwargs["failure_callback"] = self.failure_callback
+        ret = self.seq_opt(opts, **kwargs)
         if hasattr(tags[0], 'name'):
             ret.name = tags[0].name
         return ret
 
     def print_summary(self, stream=sys.stdout):
-        print >> stream, "SequenceDB (id %i)" % id(self)
+        print >> stream, self.__class__.__name__ + " (id %i)" % id(self)
         positions = self.__position__.items()
 
         def c(a, b):
@@ -275,6 +281,19 @@ class SequenceDB(DB):
         sio = StringIO()
         self.print_summary(sio)
         return sio.getvalue()
+
+
+class LocalGroupDB(SequenceDB):
+    """This generate a local optimizer of type LocalOptGroup instead
+    of a global optimizer.
+
+    It support the tracks, to only get applied to some Op.
+    """
+    seq_opt = opt.LocalOptGroup
+
+    def __init__(self, failure_callback=opt.SeqOptimizer.warn):
+        super(LocalGroupDB, self).__init__()
+        self.failure_callback = None
 
 
 class ProxyDB(DB):

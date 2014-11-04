@@ -1,5 +1,5 @@
 """WRITEME"""
-from copy import copy
+from copy import copy, deepcopy
 import StringIO
 import sys
 import traceback
@@ -13,7 +13,7 @@ __excepthook = sys.excepthook
 
 
 def log_thunk_trace(value, f=sys.stderr):
-    """Log theano's diagnostic stack trace for an exception
+    """Log Theano's diagnostic stack trace for an exception
     raised by raise_with_op.
     """
     # in future, consider accepting `write` as arg rather than file
@@ -149,14 +149,15 @@ def raise_with_op(node, thunk=None, exc_info=None):
         sio = StringIO.StringIO()
         traceback.print_list(tr, sio)
         tr = sio.getvalue()
-        detailed_err_msg += "\nBacktrace when the node is created:"
+        detailed_err_msg += "\nBacktrace when the node is created:\n"
         detailed_err_msg += str(tr)
     else:
         hints.append(
             "HINT: Re-running with most Theano optimization disabled could"
-            " give you a back-traces when this node was created. This can"
-            " be done with by setting the Theano flags"
-            " optimizer=fast_compile")
+            " give you a back-trace of when this node was created. This can"
+            " be done with by setting the Theano flag"
+            " 'optimizer=fast_compile'. If that does not work,"
+            " Theano optimizations can be disabled with 'optimizer=None'.")
 
     if theano.config.exception_verbosity == 'high':
         f = StringIO.StringIO()
@@ -277,6 +278,8 @@ class Container(object):
             self.type = r.type
         if name is None:
             self.name = r.name
+        else:
+            self.name = name
 
         self.storage = storage
         self.readonly = readonly
@@ -317,6 +320,30 @@ class Container(object):
 
     def __repr__(self):
         return "<" + repr(self.storage[0]) + ">"
+
+    def __deepcopy__(self, memo):
+        data_was_in_memo = id(self.storage[0]) in memo
+        r = type(self)(
+            deepcopy(self.type, memo=memo),
+            deepcopy(self.storage, memo=memo),
+            deepcopy(self.readonly, memo=memo),
+            deepcopy(self.strict, memo=memo),
+            deepcopy(self.allow_downcast, memo=memo),
+            deepcopy(self.name, memo=memo),
+            )
+        # Work around NumPy deepcopy of ndarray with 0 dimention that
+        # don't return an ndarray.
+        if (r.storage[0] is not None and
+            not self.type.is_valid_value(r.storage[0])):
+
+            assert not data_was_in_memo
+            assert self.type.is_valid_value(self.storage[0])
+            # This should also work for read only container.
+            r.storage[0] = self.type.filter(r.storage[0],
+                                            strict=False,
+                                            allow_downcast=False)
+            memo[id(self.storage[0])] = r.storage[0]
+        return r
 
 
 def map_storage(fgraph, order, input_storage, output_storage):
@@ -590,6 +617,7 @@ class PerformLinker(LocalLinker):
 
         f.allow_gc = self.allow_gc #HACK: this is a way of passing an arg to Function.__call__
         add_clear_storage(f, computed, storage_map)
+        f.storage_map = storage_map
 
         return f, [Container(input, storage) for input, storage in zip(fgraph.inputs, input_storage)], \
             [Container(output, storage, True) for output, storage in zip(fgraph.outputs, output_storage)], \

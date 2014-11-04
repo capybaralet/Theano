@@ -184,6 +184,15 @@ import theano and print the config variable, as in:
     and similar functions.  It also sets the default theano bit width for
     arguments passed as Python floating-point numbers.
 
+.. attribute:: warn_float64
+
+    String value: either 'ignore', 'warn', 'raise' or 'pdb'
+
+    Default: 'ignore'
+
+    When creating a TensorVariable with dtype float64, what should be done?
+    This is useful to help find upcast to float64 in user code.
+
 .. attribute:: allow_gc
 
     Bool value: either ``True`` or ``False``
@@ -320,6 +329,26 @@ import theano and print the config variable, as in:
     For the memory profile, do not print Apply nodes if the size
     of their outputs (in bytes) is lower than this.
 
+.. attribute:: profiling.min_peak_memory
+
+    Bool value: either True or False
+
+    Default False
+
+    Does the memory profile print the min peak memory usage?
+    It only works when profile=True, profile_memory=True
+
+.. attribute:: profiling.destination
+
+    String value: 'stderr', 'stdout', or a name of a
+    file to be created
+
+    Default 'stderr'
+
+    Name of the destination file for the profiling output.
+    The profiling output can be either directed to stderr
+    (default), or stdout or an arbitrary file.
+
 .. attribute:: config.lib.amdlibm
 
     Bool value: either True or False
@@ -432,6 +461,20 @@ import theano and print the config variable, as in:
     Default: '-lblas'
 
     Link arguments to link against a (Fortran) level-3 blas implementation.
+
+.. attribute:: config.experimental.local_alloc_elemwise_assert
+
+    Bool value: either True or False
+
+    Default: True
+
+    When the local_alloc_optimization is applied, add an assert to highlight
+    shape errors.
+
+    Without such asserts this optimization could hide errors in the user code.
+    We add the assert only if we can't infer that the shapes are equivalent.
+    As such this optimization does not always introduce an assert in the graph.
+    Removing the assert could speed up execution.
 
 .. attribute:: config.cuda.root
 
@@ -654,6 +697,16 @@ import theano and print the config variable, as in:
    optimization phase. Theano user's do not need to use this. This is
    to help debug shape error in Theano optimization.
 
+.. attribute:: config.reoptimize_unpickled_function
+
+    Bool value, default: True
+
+    Theano users can use the standard python pickle tools to save a compiled 
+    theano function. When pickling, both graph before and after the optimization 
+    are saved, including shared variables. When set to True, the graph is 
+    reoptimized when being unpickled. Otherwise, skip the graph optimization and 
+    use directly the optimized graph. 
+
 .. attribute:: config.exception_verbosity
 
     String Value: ``'low'``, ``'high'``.
@@ -699,3 +752,9 @@ import theano and print the config variable, as in:
     Bool value, default: False
 
     If True, will print compilation warnings.
+
+.. attribute:: cmodule.preload_cache'
+
+    Bool value, default: False
+
+    If set to True, will preload the C module cache at import time

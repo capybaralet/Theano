@@ -4,8 +4,10 @@ fg.py: fg stands for FunctionGraph
 Contains the FunctionGraph class and exception
 types that it can raise
 """
+import StringIO
 import sys
 import time
+import traceback
 
 import theano
 from theano.gof import graph
@@ -85,6 +87,11 @@ class FunctionGraph(utils.object2):
         #TODO: document what variables are[not] set in the FunctionGraph when a feature
         is added via the constructor.  How constructed is the FunctionGraph?
 
+        Note: the intermediate nodes between 'inputs' and 'outputs' are not explicitely
+        passed.
+         
+        :param inputs: inputs nodes of the graph, usually declared by the user
+        :param outputs: outputs nodes of the graph.
         :param clone: If true, we will clone the graph. This is
         useful to remove the constant cache problem.
 
@@ -328,18 +335,29 @@ class FunctionGraph(utils.object2):
                             #if there is no path then r isn't really a graph input so we shouldn't be running error
                             #handler code in the first place
                             assert path is not None
+                            tr = getattr(r.tag, 'trace', None)
+                            detailed_err_msg = ""
+                            if tr:
+                                sio = StringIO.StringIO()
+                                traceback.print_list(tr, sio)
+                                tr = sio.getvalue()
+                                detailed_err_msg += "\nBacktrace when the variable is created:\n"
+                                detailed_err_msg += str(tr)
 
-                            raise MissingInputError((
+                            raise MissingInputError(
                                 'A variable that is an input to the graph was '
                                 'neither provided as an input to the function '
                                 'nor given a value. A chain of variables '
                                 'leading from this input to an output is %s. '
-                                'This chain may not be unique' % str(path)))
+                                'This chain may not be unique' % str(path) +
+                                detailed_err_msg)
 
                         #Standard error message
                         raise MissingInputError((
                             "An input of the graph, used to compute %s, "
-                            "was not provided and not given a value"
+                            "was not provided and not given a value."
+                            "Use the Theano flag exception_verbosity='high',"
+                            "for more information on this error."
                             % str(node)),
                             r)
 
@@ -711,17 +729,42 @@ class FunctionGraph(utils.object2):
         return self.__str__()
 
     ### clone ###
-    def clone(self):
+    def clone(self, check_integrity=True):
         """WRITEME"""
-        return self.clone_get_equiv()[0]
+        return self.clone_get_equiv(check_integrity)[0]
 
-    def clone_get_equiv(self):
+    def clone_get_equiv(self, check_integrity=True):
         """WRITEME"""
         equiv = graph.clone_get_equiv(self.inputs, self.outputs)
-        self.check_integrity()
+        if check_integrity:
+            self.check_integrity()
         e = FunctionGraph([equiv[i] for i in self.inputs],
                           [equiv[o] for o in self.outputs])
-        e.check_integrity()
+        if check_integrity:
+            e.check_integrity()
         for feature in self._features:
             e.attach_feature(feature)
         return e, equiv
+
+    def __getstate__(self):
+        """This is needed as some feature introduce instancemethod and
+        this is not pickable.
+        """
+        d = self.__dict__.copy()
+        for feature in self._features:
+            for attr in getattr(feature, "pickle_rm_attr", []):
+                del d[attr]
+        # The class Updater take fct as parameter and they are lambda function, so unpicklable.
+
+        # execute_callbacks_times have reference to optimizer, and they can't 
+        # be pickled as the decorators with parameters aren't pickable.
+        if "execute_callbacks_times" in d:
+            del d["execute_callbacks_times"]
+
+        return d
+
+    def __setstate__(self, dct):
+        self.__dict__.update(dct)
+        for feature in self._features:
+            if hasattr(feature, "unpickle"):
+                feature.unpickle(self)

@@ -55,13 +55,13 @@ from theano.gof.link import \
     Container, Linker, LocalLinker, PerformLinker, WrapLinker, WrapLinkerMany
 
 from theano.gof.op import \
-    Op, OpenMPOp, PureOp, ops_with_inner_function
+    Op, OpenMPOp, PureOp, COp, ops_with_inner_function
 
 from theano.gof.opt import (
     Optimizer,
     optimizer, inplace_optimizer,
     SeqOptimizer,
-    MergeOptimizer, MergeOptMerge,
+    MergeOptimizer,
     LocalOptimizer, local_optimizer, LocalOptGroup,
     OpSub, OpRemove, PatternSub,
     NavigatorOptimizer, TopoOptimizer, EquilibriumOptimizer,
@@ -81,3 +81,8 @@ from theano.gof.type import \
 
 from theano.gof.utils import \
     hashtype, object2, MethodNotDefined
+
+import theano
+
+if theano.config.cmodule.preload_cache:
+    cc.get_module_cache()

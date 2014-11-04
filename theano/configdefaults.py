@@ -1,7 +1,7 @@
 import os
 import logging
-import subprocess
 
+import theano
 from theano.configparser import (AddConfigVar, BoolParam, ConfigParam, EnumStr,
                                  IntParam, StrParam, TheanoConfigParser)
 from theano.misc.cpucount import cpuCount
@@ -11,10 +11,26 @@ _logger = logging.getLogger('theano.configdefaults')
 
 config = TheanoConfigParser()
 
+def floatX_convert(s):
+    if s == "32":
+        return "float32"
+    elif s == "64":
+        return "float64"
+    else:
+        return s
+
 AddConfigVar('floatX',
-        "Default floating-point precision for python casts",
-        EnumStr('float64', 'float32'),
-        )
+             "Default floating-point precision for python casts",
+             EnumStr('float64', 'float32', convert=floatX_convert,),
+)
+
+AddConfigVar('warn_float64',
+             "Do an action when a tensor variable with float64 dtype is"
+             " created. They can't be run on the GPU with the current(old)"
+             " gpu back-end and are slow with gamer GPUs.",
+             EnumStr('ignore', 'warn', 'raise', 'pdb'),
+             in_c_key=False,
+)
 
 AddConfigVar('cast_policy',
         "Rules for implicit type casting",
@@ -102,6 +118,7 @@ AddConfigVar('print_active_device',
         BoolParam(True, allow_override=False),
         in_c_key=False)
 
+
 # Do not add FAST_RUN_NOGC to this list (nor any other ALL CAPS shortcut).
 # The way to get FAST_RUN_NOGC is with the flag 'linker=c|py_nogc'.
 # The old all capital letter way of working is deprecated as it is not
@@ -120,28 +137,8 @@ enum = EnumStr("g++", "")
 try:
     rc = call_subprocess_Popen(['g++', '-v'])
 except OSError:
-    rc = 1
-if rc == 0:
-    # Keep the default linker the same as the one for the mode FAST_RUN
-    AddConfigVar('linker',
-                 ("Default linker used if the theano flags mode is Mode "
-                  "or ProfileMode(deprecated)"),
-                 EnumStr('cvm', 'c|py', 'py', 'c', 'c|py_nogc', 'c&py',
-                     'vm', 'vm_nogc', 'cvm_nogc'),
-                 in_c_key=False)
-else:
-    # g++ is not present, linker should default to python only
-    AddConfigVar('linker',
-                 ("Default linker used if the theano flags mode is Mode "
-                  "or ProfileMode(deprecated)"),
-                 EnumStr('py', 'vm', 'vm_nogc'),
-                 in_c_key=False)
-    _logger.warning('g++ not detected ! Theano will be unable to execute '
-            'optimized C-implementations (for both CPU and GPU) and will '
-            'default to Python implementations. Performance will be severely '
-            'degraded.')
     enum = EnumStr("")
-
+    rc = 1
 AddConfigVar('cxx',
              "The C++ compiler to use. Currently only g++ is"
              " supported, but supporting additional compilers should not be "
@@ -150,6 +147,33 @@ AddConfigVar('cxx',
              enum,
              in_c_key=False)
 del enum
+
+if rc == 0 and config.cxx != "":
+    # Keep the default linker the same as the one for the mode FAST_RUN
+    AddConfigVar('linker',
+                 ("Default linker used if the theano flags mode is Mode "
+                  "or ProfileMode(deprecated)"),
+                 EnumStr('cvm', 'c|py', 'py', 'c', 'c|py_nogc', 'c&py',
+                     'vm', 'vm_nogc', 'cvm_nogc'),
+                 in_c_key=False)
+else:
+    # g++ is not present or the user disabled it,
+    # linker should default to python only.
+    AddConfigVar('linker',
+                 ("Default linker used if the theano flags mode is Mode "
+                  "or ProfileMode(deprecated)"),
+                 EnumStr('vm', 'py', 'vm_nogc'),
+                 in_c_key=False)
+    try:
+        # If the user provided an empty value for cxx, do not warn.
+        theano.configparser.fetch_val_for_key('cxx')
+    except KeyError:
+        _logger.warning(
+            'g++ not detected ! Theano will be unable to execute '
+            'optimized C-implementations (for both CPU and GPU) and will '
+            'default to Python implementations. Performance will be severely '
+            'degraded. To remove this warning, set Theano flags cxx to an '
+            'empty string.')
 
 
 #Keep the default value the same as the one for the mode FAST_RUN
@@ -400,6 +424,25 @@ AddConfigVar('warn.vm_gc_bug',
         BoolParam(False),
         in_c_key=False)
 
+AddConfigVar('warn.signal_conv2d_interface',
+             ("Warn we use the new signal.conv2d() when its interface"
+              " changed mid June 2014"),
+             BoolParam(warn_default('0.7')),
+             in_c_key=False)
+
+AddConfigVar('warn.reduce_join',
+             ('Your current code is fine, but Theano versions '
+              'prior to 0.7 (or this development version) '
+              'might have given an incorrect result. '
+              'To disable this warning, set the Theano flag '
+              'warn.reduce_join to False. The problem was an '
+              'optimization, that modified the pattern '
+              '"Reduce{scalar.op}(Join(axis=0, a, b), axis=0)", '
+              'did not check the reduction axis. So if the '
+              'reduction axis was not 0, you got a wrong answer.'),
+             BoolParam(warn_default('0.7')),
+             in_c_key=False)
+
 AddConfigVar('compute_test_value',
         ("If 'True', Theano will run each op at graph build time, using "
          "Constants, SharedVariables and the tag 'test_value' as inputs "
@@ -422,6 +465,12 @@ AddConfigVar('unpickle_function',
               " them when it shouldn't"),
              BoolParam(True),
              in_c_key=False)
+
+AddConfigVar('reoptimize_unpickled_function',
+        "Re-optimize the graph when a theano function is unpickled from the disk.",
+        BoolParam(True, allow_override=True),
+        in_c_key=False)
+
 
 """Note to developers:
     Generally your exceptions should use an apply node's __str__
@@ -489,3 +538,18 @@ AddConfigVar('openmp_elemwise_minsize',
              IntParam(200000),
              in_c_key=False,
          )
+
+AddConfigVar('check_input',
+             "Specify if types should check their input in their C code. "
+             "It can be used to speed up compilation, reduce overhead "
+              "(particularly for scalars) and reduce the number of generated C "
+              "files.",
+             BoolParam(True))
+
+AddConfigVar('cache_optimizations',
+             "WARNING: work in progress, does not work yet."
+             "Specify if the optimization cache should be used. This cache will"
+             "any optimized graph and its optimization. Actually slow downs a lot"
+             "the first optimization, and could possibly still contains some bugs."
+             "Use at your own risks.",
+             BoolParam(False))

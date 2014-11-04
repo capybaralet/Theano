@@ -1,4 +1,8 @@
 import copy
+import pdb
+import sys
+import traceback as tb
+import warnings
 
 import numpy
 
@@ -9,7 +13,13 @@ from theano.gof import Constant, Variable
 from theano.gof.utils import hashtype
 from theano.tensor.utils import hash_from_ndarray
 from theano.tensor.type import TensorType
+from theano.configparser import config
 
+
+def equal_slices(s1, s2):
+    return (s1.start == s2.start and
+            s1.stop == s2.stop and
+            s1.step == s2.step)
 
 
 class AsTensorError(TypeError):
@@ -371,15 +381,17 @@ class _tensor_py_operators:
 
         if advanced:
             if (axis is not None
-                and all(a == slice(None) for a in args[:axis])
-                and all(a == slice(None) for a in args[axis + 1:])
+                and all(isinstance(a, slice) and
+                        equal_slices(a, slice(None)) for a in args[:axis])
+                and all(isinstance(a, slice) and
+                        equal_slices(a, slice(None)) for a in args[axis + 1:])
                 and isinstance(args[axis], (
-                        numpy.ndarray,
-                        list,
-                        TensorVariable,
-                        TensorConstant,
-                        theano.tensor.sharedvar.TensorSharedVariable))):
-                return self.take(arg, axis)
+                    numpy.ndarray,
+                    list,
+                    TensorVariable,
+                    TensorConstant,
+                    theano.tensor.sharedvar.TensorSharedVariable))):
+                return self.take(args[axis], axis)
             else:
                 return theano.tensor.subtensor.advanced_subtensor(self, *args)
         else:
@@ -406,8 +418,9 @@ class _tensor_py_operators:
                 return rval
             else:
                 return theano.tensor.subtensor.Subtensor(args)(
-                    self, *theano.tensor.subtensor.Subtensor.collapse(args,
-                    lambda entry: isinstance(entry, Variable)))
+                    self, *theano.tensor.subtensor.Subtensor.collapse(
+                        args,
+                        lambda entry: isinstance(entry, Variable)))
 
     def take(self, indices, axis=None, mode='raise'):
         return theano.tensor.subtensor.take(self, indices, axis, mode)
@@ -535,7 +548,7 @@ class _tensor_py_operators:
         return theano.tensor.basic.round(self, mode)
 
     def trace(self):
-        return theano.sandbox.linalg.trace(self)
+        return theano.tensor.nlinalg.trace(self)
 
     # TO TRUMP NUMPY OPERATORS
     __array_priority__ = 1000
@@ -552,10 +565,60 @@ class _tensor_py_operators:
     def cumprod(self, axis=None):
         return theano.tensor.extra_ops.cumprod(self, axis)
 
+    def ptp(self, axis=None):
+        """see 'theano.tensor.ptp'"""
+
+        return theano.tensor.ptp(self, axis)
+
+    def swapaxes(self, axis1, axis2):
+        """Return 'tensor.swapaxes(self, axis1, axis2)
+
+        If a matrix is provided with the right axes, its transpose
+        will be returned.
+
+        """
+        return theano.tensor.basic.swapaxes(self, axis1, axis2)
+
+    def fill(self, value):
+        """Fill inputted tensor with the assigned value"""
+        return theano.tensor.basic.fill(self, value)
+
+    def choose(self, a, choices, out=None, mode='raise'):
+        """Construct an array from an index array and a set of arrays to choose from."""
+        return theano.tensor.basic.choose(self, a, choices, out=None, mode='raise')
 
 class TensorVariable(_tensor_py_operators, Variable):
     """Subclass to add the tensor operators to the basic `Variable` class."""
 
+    def __init__(self, type, owner=None, index=None, name=None):
+        super(TensorVariable, self).__init__(type, owner=owner,
+                                             index=index, name=name)
+        if (config.warn_float64 != 'ignore' and type.dtype == 'float64'):
+            msg = ('You are creating a TensorVariable '
+                   'with float64 dtype. You requested an action via '
+                   'the Theano flag warn_float64={ignore,warn,raise,pdb}.')
+            if config.warn_float64 == "warn":
+                # Get the user stack. We don't want function inside the
+                # tensor and gof directory to be shown to the user.
+                x = tb.extract_stack()
+                nb_rm = 0
+                while x:
+                    file_path = x[-1][0]
+                    rm = False
+                    for p in ["theano/tensor/",
+                              "theano/gof/"]:
+                        if p in file_path:
+                            x = x[:-1]
+                            nb_rm += 1
+                            rm = True
+                            break
+                    if not rm:
+                        break
+                warnings.warn(msg, stacklevel=1 + nb_rm)
+            elif config.warn_float64 == "raise":
+                raise Exception(msg)
+            elif config.warn_float64 == 'pdb':
+                import pdb;pdb.set_trace()
 TensorType.Variable = TensorVariable
 
 
@@ -684,6 +747,7 @@ class TensorConstant(_tensor_py_operators, Constant):
             other = theano.tensor.basic.constant(other)
         return (isinstance(other, TensorConstant) and
                 self.signature() == other.signature())
+
     def __copy__(self):
         # We need to do this to remove the cached attribute
         return type(self)(self.type, self.data, self.name)

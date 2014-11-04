@@ -7,7 +7,6 @@ from theano import tensor, gof, Op
 from theano.gof.python25 import all, any
 from theano.tensor.subtensor import IncSubtensor, Subtensor, get_idx_list
 import theano.tensor.inplace
-from theano.sandbox.cuda.nvcc_compiler import NVCC_compiler
 
 try:
     import pygpu
@@ -18,6 +17,7 @@ except ImportError:
 from theano.sandbox.gpuarray.type import GpuArrayType
 from theano.sandbox.gpuarray.basic_ops import as_gpuarray_variable, HideC
 from theano.sandbox.gpuarray.elemwise import GpuElemwise
+from theano.sandbox.gpuarray.comp import NVCC_compiler
 
 
 class GpuSubtensor(HideC, Subtensor):
@@ -31,15 +31,10 @@ class GpuSubtensor(HideC, Subtensor):
     def perform(self, node, inputs, out_):
         out, = out_
         x = inputs[0]
-        if self.perform_cache_cdata is not None:
-            out[0] = x.__getitem__(self.perform_cache_cdata)
-            return
 
         cdata = get_idx_list(inputs, self.idx_list)
         if len(cdata) == 1:
             cdata = cdata[0]
-        if len(inputs) == 1:
-            self.perform_cache_cdata = cdata
 
         out[0] = x.__getitem__(cdata)
 
@@ -231,7 +226,8 @@ class GpuIncSubtensor(IncSubtensor):
             # scalar case
             if not self.set_instead_of_inc:
                 #x.__setitem__(cdata, sub_x + y)
-                tmp = pygpu.elemwise.elemwise2(sub_x, '+', y,  sub_x, broadcast=False)
+                tmp = pygpu.elemwise.elemwise2(sub_x, '+', y,  sub_x,
+                                               broadcast=False)
                 x.__setitem__(cdata, tmp)
             else:
                 x.__setitem__(cdata, y)
@@ -591,4 +587,4 @@ class GpuAdvancedIncSubtensor1_dev20(GpuAdvancedIncSubtensor1):
                 return;
         }
 
-        """ %locals()
+        """ % locals()

@@ -205,13 +205,18 @@ class Scan(PureOp):
                    )
         err_msg2 = ('When compiling the inner function of scan the '
                     'following error has been encountered: The '
-                    'initial state (outputs_info in scan nomenclature) '
-                    'of variable %s (argument number %d)'
-                    ' has dtype %s and %d dimension(s), while the result '
-                    'of the inner function for this output has dtype %s '
-                    'and %d dimension(s). This could happen if the inner '
-                    'graph of scan results in an upcast or downcast. '
-                    'Please make sure that you use dtypes consistently')
+                    'initial state (`outputs_info` in scan nomenclature) '
+                    'of variable %s (argument number %d) '
+                    'has dtype %s, while the result of the inner function '
+                    '(`fn`) has dtype %s. This can happen if the inner '
+                    'function of scan results in an upcast or downcast.')
+        err_msg3 = ('When compiling the inner function of scan the '
+                    'following error has been encountered: The '
+                    'initial state (`outputs_info` in scan nomenclature) '
+                    'of variable %s (argument number %d) has %d dimension(s), '
+                    'while the result of the inner function (`fn`) has %d '
+                    'dimension(s) (should be one less than the initial '
+                    'state).')
 
         def format(var, as_var):
             """ This functions ensures that ``out`` has the same dtype as
@@ -272,17 +277,19 @@ class Scan(PureOp):
                                            inner_mitmot[ipos + k].type.ndim))
             ipos += len(itaps)
             for k in xrange(len(otaps)):
-                if (inner_mitmot_outs[opos + k].type.dtype != \
-                        outer_mitmot.type.dtype or
-                    inner_mitmot_outs[opos + k].ndim != \
-                         outer_mitmot.ndim - 1):
+                if (inner_mitmot_outs[opos + k].type.dtype !=
+                        outer_mitmot.type.dtype):
                     raise ValueError(err_msg2 %
-                                      (str(outer_mitmot),
-                                       argoffset + idx,
-                                       outer_mitmot.type.dtype,
-                                       outer_mitmot.ndim,
-                                       inner_mitmot_outs[opos + k].type.dtype,
-                                       inner_mitmot_outs[opos + k].ndim))
+                                     (str(outer_mitmot),
+                                      argoffset + idx,
+                                      outer_mitmot.type.dtype,
+                                      inner_mitmot_outs[opos + k].type.dtype))
+                if inner_mitmot_outs[opos + k].ndim != outer_mitmot.ndim - 1:
+                    raise ValueError(err_msg3 %
+                                     (str(outer_mitmot),
+                                      argoffset + idx,
+                                      outer_mitmot.ndim,
+                                      inner_mitmot_outs[opos + k].ndim))
             opos += len(otaps)
         argoffset += len(self.outer_mitmot(inputs))
         # Same checks as above but for outputs of type mit_sot
@@ -309,15 +316,18 @@ class Scan(PureOp):
                                            inner_mitsots[ipos + k].type.dtype,
                                            inner_mitsots[ipos + k].type.ndim))
             ipos += len(itaps)
-            if (inner_mitsot_out.type.dtype != outer_mitsot.type.dtype or
-                inner_mitsot_out.ndim != outer_mitsot.ndim - 1):
+            if inner_mitsot_out.type.dtype != outer_mitsot.type.dtype:
                 raise ValueError(err_msg2 %
                                  (str(outer_mitsot),
-                                 argoffset + idx,
-                                 outer_mitsot.type.dtype,
-                                 outer_mitsot.type.ndim,
-                                 inner_mitsot_out.type.dtype,
-                                 inner_mitsot_out.type.ndim))
+                                  argoffset + idx,
+                                  outer_mitsot.type.dtype,
+                                  inner_mitsot_out.type.dtype))
+            if inner_mitsot_out.ndim != outer_mitsot.ndim - 1:
+                raise ValueError(err_msg3 %
+                                 (str(outer_mitsot),
+                                  argoffset + idx,
+                                  outer_mitsot.ndim,
+                                  inner_mitsot_out.ndim))
 
         argoffset += len(self.outer_mitsot(inputs))
         # Same checks as above but for outputs of type sit_sot
@@ -337,15 +347,18 @@ class Scan(PureOp):
                                 str(inner_sitsot),
                                 inner_sitsot.type.dtype,
                                 inner_sitsot.type.ndim))
-            if (inner_sitsot_out.type.dtype != outer_sitsot.type.dtype or
-                inner_sitsot_out.ndim != outer_sitsot.ndim - 1):
+            if inner_sitsot_out.type.dtype != outer_sitsot.type.dtype:
                 raise ValueError(err_msg2 %
-                                (str(outer_sitsot),
-                                argoffset + idx,
-                                outer_sitsot.type.dtype,
-                                outer_sitsot.type.ndim,
-                                inner_sitsot_out.type.dtype,
-                                inner_sitsot_out.type.ndim))
+                                 (str(outer_sitsot),
+                                  argoffset + idx,
+                                  outer_sitsot.type.dtype,
+                                  inner_sitsot_out.type.dtype))
+            if inner_sitsot_out.ndim != outer_sitsot.ndim - 1:
+                raise ValueError(err_msg3 %
+                                 (str(outer_sitsot),
+                                  argoffset + idx,
+                                  outer_sitsot.type.ndim,
+                                  inner_sitsot_out.type.ndim))
 
         argoffset += len(self.outer_sitsot(inputs))
         # Check that the shared variable and their update rule have the same
@@ -357,13 +370,16 @@ class Scan(PureOp):
             outer_shared = format(_outer_shared, as_var=inner_shared)
             new_inputs.append(outer_shared)
             if (hasattr(outer_shared, 'dtype') and
-                (outer_shared.dtype != inner_shared_out.dtype or
-                 outer_shared.ndim != inner_shared_out.ndim)):
+                    outer_shared.dtype != inner_shared_out.dtype):
                 raise ValueError(err_msg2 % (str(outer_shared),
                                              idx + argoffset,
                                              outer_shared.dtype,
+                                             inner_shared_out.dtype))
+            if (hasattr(outer_shared, 'dtype') and
+                    outer_shared.ndim != inner_shared_out.ndim):
+                raise ValueError(err_msg3 % (str(outer_shared),
+                                             idx + argoffset,
                                              outer_shared.ndim,
-                                             inner_shared_out.dtype,
                                              inner_shared_out.ndim))
 
             if (hasattr(outer_shared, 'dtype') and
@@ -406,11 +422,19 @@ class Scan(PureOp):
                 raise ValueError('For output %s you need to provide a '
                                  'scalar int !', str(outer_nitsot))
         assert len(new_inputs) == len(inputs)
-        self.vector_seqs = [seq.ndim == 1 for seq in
-                             new_inputs[1:1 + self.n_seqs]]
-        self.vector_outs = [arg.ndim == 1 for arg in
-                             new_inputs[1 + self.n_seqs: (1 + self.n_seqs +
-                                                    self.n_outs)]]
+
+        # The vector_seqs and vector_outs are just a workaround
+        # strange NumPy behavior: vector_ndarray[int] return a NumPy
+        # scalar and not a NumPy ndarray of 0 dimensions.
+        self.vector_seqs = [isinstance(seq, (tensor.TensorVariable,
+                                             tensor.TensorConstant)) and
+                            seq.ndim == 1 for seq in
+                            new_inputs[1:1 + self.n_seqs]]
+        self.vector_outs = [isinstance(arg, (tensor.TensorVariable,
+                                             tensor.TensorConstant)) and
+                            arg.ndim == 1 for arg in
+                            new_inputs[1 + self.n_seqs: (1 + self.n_seqs +
+                                                         self.n_outs)]]
         self.vector_outs += [False] * self.n_nit_sot
 
         apply_node = Apply(self,
@@ -582,12 +606,6 @@ class Scan(PureOp):
                 for _d1 in range(cython_mit_mot_out_nslices[_d0]):
                     cython_mit_mot_out_slices[_d0, _d1] = \
                         self.mit_mot_out_slices[_d0][_d1]
-            vector_seqs = [seq.ndim == 1 for seq in
-                                 node.inputs[1:1 + self.n_seqs]]
-            vector_outs = [arg.ndim == 1 for arg in
-                                 node.inputs[1 + self.n_seqs:
-                                             (1 + self.n_seqs + self.n_outs)]]
-            vector_outs += [False] * self.n_nit_sot
 
             cython_vector_seqs = numpy.asarray(self.vector_seqs,
                                                     dtype='int32')
@@ -817,15 +835,14 @@ class Scan(PureOp):
         n_steps = args[0]
         seqs = []
         if n_steps < 0:
-            n_steps = abs(n_steps)
-            for idx, seq in enumerate(args[1:self.seqs_arg_offset]):
-                if seq.shape[0] < n_steps:
-                    raise ValueError(('Sequence is shorter then the required '
-                                     'number of steps : (n_steps, seq, '
-                                      'seq.shape):'), n_steps,
-                                      node.inputs[1 + idx],
-                                      seq.shape)
-                seqs.append(seq[::-1])
+            # History, in the past, this was used for backward
+            # scan. Now we reverse the inputs outside of scan.
+            raise IndexError(
+                "Scan was asked to run for negative number of step %d" %
+                n_steps)
+        elif n_steps == 0:
+            raise NotImplementedError(
+                "We didn't implemented yet the case where scan do 0 iteration")
         else:
             for idx, seq in enumerate(args[1:self.seqs_arg_offset]):
                 if seq.shape[0] < n_steps:
@@ -1087,6 +1104,13 @@ class Scan(PureOp):
                     # little trick that I used
                     outs[idx][0] = outs[idx][0][:-(n_steps - i)]
 
+        # We never reuse the input or output storage of the
+        # inner function so we clear it.
+        for i_s in input_storage:
+            i_s.storage[0] = None
+        for o_s in output_storage:
+            o_s.storage[0] = None
+
         t_call = time.time() - t0_call
         # NOTE: make this match what's in function_module.Function
         # and this little string helps us to find this spot:
@@ -1267,6 +1291,11 @@ class Scan(PureOp):
         return ipos + opos
 
     def connection_pattern(self, node):
+        # We cache this, as grad call connection_pattern, and it call
+        # grad in its turn. I was a case where theano.grad() took 4h
+        # that had many scan one inside each others.
+        if hasattr(node.tag, 'connection_pattern'):
+            return node.tag.connection_pattern
         # The gradient wrt to n_steps is disconnected
         connection_pattern = [[False for output in node.outputs]]
         connection_pattern += [[False for output in node.outputs]
@@ -1373,6 +1402,8 @@ class Scan(PureOp):
                         for k in xrange(len(connection_pattern)):
                             if connection_pattern[k][jidx]:
                                 connection_pattern[k][iidx] = True
+
+        node.tag.connection_pattern = connection_pattern
         return connection_pattern
 
     ### GRAD FUNCTION

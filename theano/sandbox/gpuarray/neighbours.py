@@ -2,7 +2,6 @@ import numpy
 
 from theano import Op, Apply, config
 from theano.gof import local_optimizer
-from theano.sandbox.cuda.nvcc_compiler import NVCC_compiler
 from theano.sandbox.neighbours import Images2Neibs
 import theano.tensor as T
 
@@ -17,6 +16,7 @@ from theano.sandbox.gpuarray.basic_ops import (as_gpuarray_variable,
 from theano.sandbox.gpuarray.opt import register_opt as register_gpu_opt
 from theano.sandbox.gpuarray.opt import op_lifter as op_lifter
 from theano.sandbox.gpuarray.type import GpuArrayType
+from theano.sandbox.gpuarray.comp import NVCC_compiler
 
 
 class GpuImages2Neibs(Images2Neibs, Op):
@@ -29,16 +29,15 @@ class GpuImages2Neibs(Images2Neibs, Op):
         self.mode = mode
 
     def make_node(self, ten4, neib_shape, neib_step):
+        ten4 = as_gpuarray_variable(ten4)
+        neib_shape = T.as_tensor_variable(neib_shape)
+        neib_step = T.as_tensor_variable(neib_step)
 
         assert ten4.ndim == 4
         assert neib_shape.ndim == 1
         assert neib_step.ndim == 1
         assert "int" in neib_shape.dtype
         assert "int" in neib_step.dtype
-
-        ten4 = as_gpuarray_variable(ten4)
-        neib_shape = T.as_tensor_variable(neib_shape)
-        neib_step = T.as_tensor_variable(neib_step)
 
         return Apply(self, [ten4, neib_shape, neib_step],
                      [GpuArrayType(broadcastable=(False, False),

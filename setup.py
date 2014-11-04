@@ -7,6 +7,7 @@
 import os
 import sys
 import subprocess
+import codecs
 from fnmatch import fnmatchcase
 from distutils.util import convert_path
 try:
@@ -54,8 +55,8 @@ MAINTAINER          = "LISA laboratory, University of Montreal"
 MAINTAINER_EMAIL    = "theano-dev@googlegroups.com"
 DESCRIPTION         = ('Optimizing compiler for evaluating mathematical ' +
                        'expressions on CPUs and GPUs.')
-LONG_DESCRIPTION    = (open("DESCRIPTION.txt").read() + "\n\n" +
-                       open("NEWS.txt").read())
+LONG_DESCRIPTION    = (codecs.open("DESCRIPTION.txt",encoding='utf-8').read() + "\n\n" +
+                       codecs.open("NEWS.txt",encoding='utf-8').read())
 URL                 = "http://deeplearning.net/software/theano/"
 DOWNLOAD_URL        = ""
 LICENSE             = 'BSD'
@@ -193,7 +194,7 @@ def do_setup():
           install_requires=['numpy>=1.5.0', 'scipy>=0.7.2'],
           package_data={
               '': ['*.txt', '*.rst', '*.cu', '*.cuh', '*.c', '*.sh', '*.pkl',
-                   'ChangeLog'],
+                   '*.h', 'ChangeLog'],
               'theano.misc': ['*.sh']
           },
           scripts=['bin/theano-cache', 'bin/theano-nose', 'bin/theano-test'],

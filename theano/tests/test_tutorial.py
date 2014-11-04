@@ -1,12 +1,17 @@
 """ test code snippet in the Theano tutorials.
 """
 
-import os, shutil, unittest
+import os
+import shutil
+import unittest
+
+from nose.plugins.skip import SkipTest
+import numpy
+from numpy import array
+
 import theano
 import theano.tensor as T
 from theano import function
-import numpy
-from numpy import array
 
 from theano import config
 from theano.tests import unittest_tools as utt
@@ -15,13 +20,13 @@ from theano.tensor.shared_randomstreams import RandomStreams
 
 
 class T_extending(unittest.TestCase):
-    ## All tests here belong to files in
-    ## http://deeplearning.net/software/theano/extending
-    ## Theano/doc/extending/*.txt
-    ## Any change you do here also add it to the tutorial!
-    ## This belongs to an entire folder since code-snippets are connected
-    ## from one file to another .. and they do not make sense on their
-    ## own.
+    # All tests here belong to files in
+    # http://deeplearning.net/software/theano/extending
+    # Theano/doc/extending/*.txt
+    # Any change you do here also add it to the tutorial!
+    # This belongs to an entire folder since code-snippets are connected
+    # from one file to another .. and they do not make sense on their
+    # own.
 
     def test_extending_1(self):
 
@@ -59,6 +64,11 @@ class T_extending(unittest.TestCase):
             def values_eq_approx(self, x, y, tolerance=1e-4):
                 return abs(x - y) / (abs(x) + abs(y)) < tolerance
 
+            # Added to make those tests pass in DebugMode
+            @staticmethod
+            def may_share_memory(a, b):
+                return a is b
+
         double = Double()
 
 
@@ -82,6 +92,11 @@ class T_extending(unittest.TestCase):
             def __str__(self):
                 return "double"
 
+            # Added to make those tests pass in DebugMode
+            @staticmethod
+            def may_share_memory(a, b):
+                return a is b
+
         double = Double()
 
 
@@ -103,8 +118,8 @@ class T_extending(unittest.TestCase):
         x, y = double('x'), double('y')
         z = mul(x, y)
         f = theano.function([x, y], z)
-        assert f(5, 6)     == 30.0
-        assert f(5.6, 6.7) ==  37.519999999999996
+        assert f(5, 6) == 30.0
+        assert f(5.6, 6.7) == 37.519999999999996
 
         x = double('x')
         self.assertRaises(AttributeError, mul, x, 2)
@@ -156,18 +171,17 @@ class T_extending(unittest.TestCase):
             def __str__(self):
                 return self.name
 
-        add = BinaryDoubleOp(name = 'add',
-                            fn = lambda x, y: x + y)
+        add = BinaryDoubleOp(name='add',
+                             fn=lambda x, y: x + y)
 
-        sub = BinaryDoubleOp(name = 'sub',
-                            fn = lambda x, y: x - y)
+        sub = BinaryDoubleOp(name='sub',
+                             fn=lambda x, y: x - y)
 
-        mul = BinaryDoubleOp(name = 'mul',
-                            fn = lambda x, y: x * y)
+        mul = BinaryDoubleOp(name='mul',
+                             fn=lambda x, y: x * y)
 
-        div = BinaryDoubleOp(name = 'div',
-                            fn = lambda x, y: x / y)
-
+        div = BinaryDoubleOp(name='div',
+                             fn=lambda x, y: x / y)
 
     def test_extending_2(self):
         '''
@@ -189,6 +203,11 @@ class T_extending(unittest.TestCase):
 
             def __str__(self):
                 return "double"
+
+            # Added to make those tests pass in DebugMode
+            @staticmethod
+            def may_share_memory(a, b):
+                return a is b
 
         double = Double()
 
@@ -220,22 +239,22 @@ class T_extending(unittest.TestCase):
             def __str__(self):
                 return self.name
 
-        add = BinaryDoubleOp(name = 'add',
-                            fn = lambda x, y: x + y)
+        add = BinaryDoubleOp(name='add',
+                             fn=lambda x, y: x + y)
 
-        sub = BinaryDoubleOp(name = 'sub',
-                            fn = lambda x, y: x - y)
+        sub = BinaryDoubleOp(name='sub',
+                             fn=lambda x, y: x - y)
 
-        mul = BinaryDoubleOp(name = 'mul',
-                            fn = lambda x, y: x * y)
+        mul = BinaryDoubleOp(name='mul',
+                             fn=lambda x, y: x * y)
 
-        div = BinaryDoubleOp(name = 'div',
-                            fn = lambda x, y: x / y)
+        div = BinaryDoubleOp(name='div',
+                             fn=lambda x, y: x / y)
 
-        def c_declare(name, sub):
+        def c_declare(name, sub, check_input=True):
             return """
             double %(name)s;
-            """ % dict(name = name)
+            """ % dict(name=name)
         double.c_declare = c_declare
 
 
@@ -245,18 +264,19 @@ class T_extending(unittest.TestCase):
             """ % dict(name = name)
         double.c_init = c_init
 
-
-
-        def c_extract(name, sub):
-            return """
-            if (!PyFloat_Check(py_%(name)s)) {
-                PyErr_SetString(PyExc_TypeError, "expected a float");
-                %(fail)s
-            }
+        def c_extract(name, sub, check_input=True):
+            if(check_input):
+                pre = """
+                if (!PyFloat_Check(py_%(name)s)) {
+                    PyErr_SetString(PyExc_TypeError, "expected a float");
+                    %(fail)s
+                }""" % dict(name = name, fail = sub['fail'])
+            else:
+                pre = ""
+            return pre + """
             %(name)s = PyFloat_AsDouble(py_%(name)s);
             """ % dict(name = name, fail = sub['fail'])
         double.c_extract = c_extract
-
 
         def c_sync( name, sub):
             return """
@@ -298,7 +318,7 @@ class T_extending(unittest.TestCase):
             def __str__(self):
                 return "double"
 
-            def c_declare(self, name, sub):
+            def c_declare(self, name, sub, check_input=True):
                 return """
                 double %(name)s;
                 """ % dict(name = name)
@@ -308,14 +328,19 @@ class T_extending(unittest.TestCase):
                 %(name)s = 0.0;
                 """ % dict(name = name)
 
-            def c_extract(self, name, sub):
-                return """
-                if (!PyFloat_Check(py_%(name)s)) {
-                    PyErr_SetString(PyExc_TypeError, "expected a float");
-                    %(fail)s
-                }
+            def c_extract(self, name, sub, check_input=True):
+                if(check_input):
+                    pre = """
+                    if (!PyFloat_Check(py_%(name)s)) {
+                        PyErr_SetString(PyExc_TypeError, "expected a float");
+                        %(fail)s
+                    }
+                    """ % dict(sub, name=name)
+                else:
+                    pre = ""
+                return pre + """
                 %(name)s = PyFloat_AsDouble(py_%(name)s);
-                """ % dict(sub, name = name)
+                """ % dict(sub, name=name)
 
             def c_sync(self, name, sub):
                 return """
@@ -330,6 +355,11 @@ class T_extending(unittest.TestCase):
 
             def c_cleanup(self, name, sub):
                 return ""
+
+            # Added to make those tests pass in DebugMode
+            @staticmethod
+            def may_share_memory(a, b):
+                return a is b
 
         double = Double()
 
@@ -374,21 +404,21 @@ class T_extending(unittest.TestCase):
                 return self.ccode % locals()
 
 
-        add = BinaryDoubleOp(name = 'add',
-                            fn = lambda x, y: x + y,
-                            ccode = "%(z)s = %(x)s + %(y)s;")
+        add = BinaryDoubleOp(name='add',
+                            fn=lambda x, y: x + y,
+                            ccode="%(z)s = %(x)s + %(y)s;")
 
-        sub = BinaryDoubleOp(name = 'sub',
-                            fn = lambda x, y: x - y,
-                            ccode = "%(z)s = %(x)s - %(y)s;")
+        sub = BinaryDoubleOp(name='sub',
+                            fn=lambda x, y: x - y,
+                            ccode="%(z)s = %(x)s - %(y)s;")
 
-        mul = BinaryDoubleOp(name = 'mul',
-                            fn = lambda x, y: x * y,
-                            ccode = "%(z)s = %(x)s * %(y)s;")
+        mul = BinaryDoubleOp(name='mul',
+                            fn=lambda x, y: x * y,
+                            ccode="%(z)s = %(x)s * %(y)s;")
 
-        div = BinaryDoubleOp(name = 'div',
-                            fn = lambda x, y: x / y,
-                            ccode = "%(z)s = %(x)s / %(y)s;")
+        div = BinaryDoubleOp(name='div',
+                            fn=lambda x, y: x / y,
+                            ccode="%(z)s = %(x)s / %(y)s;")
 
 
         from theano.gof import toolbox
@@ -443,13 +473,45 @@ class T_extending(unittest.TestCase):
         simplify = gof.TopoOptimizer(local_simplify)
         simplify.optimize(e)
 
+    def test_as_op(self):
+        import theano
+        import numpy
+        from theano.compile.ops import as_op
+
+        def infer_shape_numpy_dot(node, input_shapes):
+            ashp, bshp = input_shapes
+            return [ashp[:-1] + bshp[-1:]]
+
+        @as_op(itypes=[theano.tensor.fmatrix, theano.tensor.fmatrix],
+               otypes=[theano.tensor.fmatrix],
+               infer_shape=infer_shape_numpy_dot)
+        def numpy_add(a, b):
+            return numpy.add(a, b)
+
+        def infer_shape_numpy_add_sub(node, input_shapes):
+            ashp, bshp = input_shapes
+            # Both inputs should have that same shape, so we just
+            # return one of them.
+            return [ashp[0]]
+
+        @as_op(itypes=[theano.tensor.fmatrix, theano.tensor.fmatrix],
+               otypes=[theano.tensor.fmatrix],
+               infer_shape=infer_shape_numpy_add_sub)
+        def numpy_add(a, b):
+            return numpy.add(a, b)
+
+        @as_op(itypes=[theano.tensor.fmatrix, theano.tensor.fmatrix],
+               otypes=[theano.tensor.fmatrix],
+               infer_shape=infer_shape_numpy_add_sub)
+        def numpy_sub(a, b):
+            return numpy.sub(a, b)
 
 
 class T_introduction(unittest.TestCase):
-    ## All tests here belong to
-    ## http://deeplearning.net/software/theano/tutorial/introduction.html
-    ## Theano/doc/tutorial/introduction.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belong to
+    # http://deeplearning.net/software/theano/tutorial/introduction.html
+    # Theano/doc/tutorial/introduction.txt
+    # Any change you do here also add it to the tutorial !
     def test_introduction_1(self):
 
         import theano
@@ -471,10 +533,10 @@ class T_introduction(unittest.TestCase):
 
 
 class T_adding(unittest.TestCase):
-    ## All tests here belong to
-    ## http://deeplearning.net/software/theano/tutorial/adding.html
-    ## Theano/doc/tutorial/adding.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belong to
+    # http://deeplearning.net/software/theano/tutorial/adding.html
+    # Theano/doc/tutorial/adding.txt
+    # Any change you do here also add it to the tutorial !
 
 
     def test_adding_1(self):
@@ -502,10 +564,10 @@ class T_adding(unittest.TestCase):
 
 
 class T_examples(unittest.TestCase):
-    ## All tests here belog to
-    ## http://deeplearning.net/software/theano/tutorial/examples.html
-    ## Theano/doc/tutorial/examples.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belog to
+    # http://deeplearning.net/software/theano/tutorial/examples.html
+    # Theano/doc/tutorial/examples.txt
+    # Any change you do here also add it to the tutorial !
 
     def test_examples_1(self):
         x = T.dmatrix('x')
@@ -741,10 +803,10 @@ class T_examples(unittest.TestCase):
 
 
 class T_aliasing(unittest.TestCase):
-    ## All tests here belog to
-    ## http://deeplearning.net/software/theano/tutorial/aliasing.html
-    ## Theano/doc/tutorial/aliasing.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belog to
+    # http://deeplearning.net/software/theano/tutorial/aliasing.html
+    # Theano/doc/tutorial/aliasing.txt
+    # Any change you do here also add it to the tutorial !
 
     def test_aliasing_1(self):
 
@@ -776,7 +838,7 @@ class T_aliasing(unittest.TestCase):
 
 
         s.set_value(
-            ## some_inplace_fn
+            # some_inplace_fn
             s.get_value(borrow=True).__imul__(2),
             borrow=True)
 
@@ -791,12 +853,11 @@ class T_aliasing(unittest.TestCase):
         f = theano.function([theano.In(x, borrow=True)], theano.Out(y, borrow=True))
 
 
-
 class T_loading_and_saving(unittest.TestCase):
-    ## All tests here belong to
-    ## http://deeplearning.net/software/theano/tutorial/loading_and_saving.html
-    ## Theano/doc/tutorial/loading_and_saving.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belong to
+    # http://deeplearning.net/software/theano/tutorial/loading_and_saving.html
+    # Theano/doc/tutorial/loading_and_saving.txt
+    # Any change you do here also add it to the tutorial !
 
     def test_loading_and_saving_1(self):
 
@@ -849,11 +910,12 @@ class T_loading_and_saving(unittest.TestCase):
                 if tmpdir is not None:
                     shutil.rmtree(tmpdir)
 
+
 class T_modes(unittest.TestCase):
-    ## All tests here belog to
-    ## http://deeplearning.net/software/theano/tutorial/modes.html
-    ## Theano/doc/tutorial/modes.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belong to
+    # http://deeplearning.net/software/theano/tutorial/modes.html
+    # Theano/doc/tutorial/modes.txt
+    # Any change you do here also add it to the tutorial !
 
     def test_modes_1(self):
 
@@ -862,15 +924,15 @@ class T_modes(unittest.TestCase):
         f = theano.function([x], 10*x, mode='DEBUG_MODE')
 
         assert numpy.all(f([5]) == [50.])
-        assert numpy.all(f([0]) == [0.] )
+        assert numpy.all(f([0]) == [0.])
         assert numpy.all(f([7]) == [70.])
 
-class T_using_gpu(unittest.TestCase):
-    ## All tests here belog to
-    ## http://deeplearning.net/software/theano/tutorial/using_gpu.html
-    ## Theano/doc/tutorial/using_gpu.txt
-    ## Any change you do here also add it to the tutorial !
 
+class T_using_gpu(unittest.TestCase):
+    # All tests here belog to
+    # http://deeplearning.net/software/theano/tutorial/using_gpu.html
+    # Theano/doc/tutorial/using_gpu.txt
+    # Any change you do here also add it to the tutorial !
 
     def test_using_gpu_1(self):
         # I'm checking if this compiles and runs
@@ -901,9 +963,7 @@ class T_using_gpu(unittest.TestCase):
         else:
             assert numpy.any([isinstance(x.op, T.Elemwise) for x in f.maker.fgraph.toposort()])
 
-
     def test_using_gpu_2(self):
-
         if theano.config.device.find('gpu') > -1:
 
             from theano import function, config, shared, sandbox
@@ -966,6 +1026,61 @@ class T_using_gpu(unittest.TestCase):
             assert not numpy.any([isinstance(x.op, T.Elemwise)
                                   for x in f.maker.fgraph.toposort()])
 
+    def test_using_gpu_pycudaop(self):
+        import theano.misc.pycuda_init
+        if not theano.misc.pycuda_init.pycuda_available:
+            raise SkipTest("Pycuda not installed. Skip test of theano op"
+                           " with pycuda code.")
+        from pycuda.compiler import SourceModule
+        import theano.sandbox.cuda as cuda
+
+        import theano.sandbox.cuda as cuda_ndarray
+        if not cuda_ndarray.cuda_available:
+            raise SkipTest('Optional package cuda disabled')
+
+        class PyCUDADoubleOp(theano.Op):
+            def __eq__(self, other):
+                return type(self) == type(other)
+
+            def __hash__(self):
+                return hash(type(self))
+
+            def __str__(self):
+                return self.__class__.__name__
+
+            def make_node(self, inp):
+                inp = cuda.basic_ops.gpu_contiguous(
+                    cuda.basic_ops.as_cuda_ndarray_variable(inp))
+                assert inp.dtype == "float32"
+                return theano.Apply(self, [inp], [inp.type()])
+
+            def make_thunk(self, node, storage_map, _, _2):
+                mod = SourceModule("""
+    __global__ void my_fct(float * i0, float * o0, int size) {
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    if(i<size){
+        o0[i] = i0[i]*2;
+    }
+  }""")
+                pycuda_fct = mod.get_function("my_fct")
+                inputs = [storage_map[v] for v in node.inputs]
+                outputs = [storage_map[v] for v in node.outputs]
+
+                def thunk():
+                    z = outputs[0]
+                    if z[0] is None or z[0].shape != inputs[0][0].shape:
+                        z[0] = cuda.CudaNdarray.zeros(inputs[0][0].shape)
+                        grid = (int(numpy.ceil(inputs[0][0].size / 512.)), 1)
+                        pycuda_fct(inputs[0][0], z[0],
+                                   numpy.intc(inputs[0][0].size),
+                                   block=(512, 1, 1), grid=grid)
+                return thunk
+        x = theano.tensor.fmatrix()
+        f = theano.function([x], PyCUDADoubleOp()(x))
+        xv = numpy.ones((4, 5), dtype="float32")
+        assert numpy.allclose(f(xv), xv*2)
+        # print numpy.asarray(f(xv))
+
 
 # Used in T_fibby
 class Fibby(theano.Op):
@@ -1018,10 +1133,10 @@ class Fibby(theano.Op):
 
 
 class T_fibby(unittest.TestCase):
-    ## All tests here belong to
-    ## http://deeplearning.net/software/theano/extending/fibby.html
-    ## Theano/doc/extending/fibby.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belong to
+    # http://deeplearning.net/software/theano/extending/fibby.html
+    # Theano/doc/extending/fibby.txt
+    # Any change you do here also add it to the tutorial !
 
     def test_fibby_1(self):
 
@@ -1074,10 +1189,10 @@ class T_fibby(unittest.TestCase):
 
 
 class T_graphstructures(unittest.TestCase):
-    ## All tests here belong to
-    ## http://deeplearning.net/software/theano/extending/graphstructures.html
-    ## Theano/doc/extending/graphstructures.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belong to
+    # http://deeplearning.net/software/theano/extending/graphstructures.html
+    # Theano/doc/extending/graphstructures.txt
+    # Any change you do here also add it to the tutorial !
 
     def test_graphstructures_1(self):
 
@@ -1139,10 +1254,10 @@ class T_graphstructures(unittest.TestCase):
 
 
 class T_scan(unittest.TestCase):
-    ## All tests here belong to
-    ## http://deeplearning.net/software/theano/tutorial/loop.html
-    ## Theano/doc/tutorial/loop.txt
-    ## Any change you do here also add it to the tutorial !
+    # All tests here belong to
+    # http://deeplearning.net/software/theano/tutorial/loop.html
+    # Theano/doc/tutorial/loop.txt
+    # Any change you do here also add it to the tutorial !
 
     def test_elemwise(self):
         # defining the tensor variables
