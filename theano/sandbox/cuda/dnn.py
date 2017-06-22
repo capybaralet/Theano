@@ -1503,7 +1503,7 @@ class GpuDnnPoolDesc(GpuOp):
     int win[%(nd)d] = {%(win)s};
     int pad[%(nd)d] = {%(pad)s};
     int str[%(nd)d] = {%(str)s};
-    err = cudnnSetPoolingNdDescriptor_v4(
+    err = cudnnSetPoolingNdDescriptor(
       %(desc)s, %(mode_flag)s,
       CUDNN_PROPAGATE_NAN, %(nd)d,
       win, pad, str);
@@ -1688,7 +1688,7 @@ for(int i = 0; i < %(nd)d; i++) {
 for(int i = 0; i < %(nd)d; i++) {
    str[i] = *((npy_intp*)PyArray_GETPTR1(%(str)s, i));
 }
-err = cudnnSetPoolingNdDescriptor_v4(
+err = cudnnSetPoolingNdDescriptor(
     pool%(name)s, %(mode_flag)s,
     CUDNN_PROPAGATE_NAN, %(nd)d,
     win, pad, str);
@@ -1965,7 +1965,7 @@ for(int i = 0; i < %(nd)d; i++) {
 for(int i = 0; i < %(nd)d; i++) {
    str[i] = *((npy_intp*)PyArray_GETPTR1(%(str)s, i));
 }
-err%(name)s = cudnnSetPoolingNdDescriptor_v4(
+err%(name)s = cudnnSetPoolingNdDescriptor(
     pool%(name)s, %(mode_flag)s,
     CUDNN_PROPAGATE_NAN, %(nd)d,
     win, pad, str);
